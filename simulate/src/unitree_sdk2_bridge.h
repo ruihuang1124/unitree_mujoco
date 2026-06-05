@@ -23,6 +23,11 @@ public:
     : mj_model_(model), mj_data_(data)
     {
         _check_sensor();
+        if (ee_link7_body_id_ >= 0 || ee_link8_body_id_ >= 0 || ee_quat_body_id_ >= 0) {
+            std::cout << "[unitree_bridge] EE debug body ids: link7=" << ee_link7_body_id_
+                      << " link8=" << ee_link8_body_id_
+                      << " quat_body(link6)=" << ee_quat_body_id_ << std::endl;
+        }
         if(param::config.print_scene_information == 1) {
             printSceneInformation();
         }
@@ -83,6 +88,10 @@ protected:
     int imu_acc_adr_ = -1;
     int frame_pos_adr_ = -1;
     int frame_vel_adr_ = -1;
+    int ee_link7_body_id_ = -1;
+    int ee_link8_body_id_ = -1;
+    int ee_quat_body_id_ = -1;
+    int ee_debug_print_count_ = 0;
 
     int secondary_imu_quat_adr_ = -1;
     int secondary_imu_gyro_adr_ = -1;
@@ -127,6 +136,12 @@ protected:
         if (sensor_id >= 0) {
             frame_vel_adr_ = mj_model_->sensor_adr[sensor_id];
         }
+
+        // Optional Go2-Piper EE debug payload.  These body ids are used to
+        // publish measured MuJoCo EE pose through SportModeState::foot_position_body.
+        ee_link7_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link7");
+        ee_link8_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link8");
+        ee_quat_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link6");
 
         // Secondary IMU quaternion
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "secondary_imu_quat");
@@ -236,6 +251,37 @@ public:
                 highstate->msg_.velocity()[0] = mj_data_->sensordata[frame_vel_adr_ + 0];
                 highstate->msg_.velocity()[1] = mj_data_->sensordata[frame_vel_adr_ + 1];
                 highstate->msg_.velocity()[2] = mj_data_->sensordata[frame_vel_adr_ + 2];
+            }
+            auto& ee_debug = highstate->msg_.foot_position_body();
+            ee_debug.fill(0.0f);
+            if (ee_link7_body_id_ >= 0 && ee_link8_body_id_ >= 0 && ee_quat_body_id_ >= 0) {
+                const mjtNum* link7_pos = mj_data_->xpos + 3 * ee_link7_body_id_;
+                const mjtNum* link8_pos = mj_data_->xpos + 3 * ee_link8_body_id_;
+                const mjtNum* ee_quat = mj_data_->xquat + 4 * ee_quat_body_id_;
+                const double ee_x = 0.5 * (link7_pos[0] + link8_pos[0]);
+                const double ee_y = 0.5 * (link7_pos[1] + link8_pos[1]);
+                const double ee_z = 0.5 * (link7_pos[2] + link8_pos[2]);
+
+                ee_debug[0] = static_cast<float>(ee_x);
+                ee_debug[1] = static_cast<float>(ee_y);
+                ee_debug[2] = static_cast<float>(ee_z);
+                ee_debug[3] = static_cast<float>(ee_quat[0]);
+                ee_debug[4] = static_cast<float>(ee_quat[1]);
+                ee_debug[5] = static_cast<float>(ee_quat[2]);
+                ee_debug[6] = static_cast<float>(ee_quat[3]);
+                ee_debug[7] = static_cast<float>(ee_x);
+                ee_debug[8] = static_cast<float>(ee_y);
+                ee_debug[9] = static_cast<float>(ee_z);
+                ee_debug[10] = 1.0f;
+                ee_debug[11] = static_cast<float>(mj_data_->time);
+                if (ee_debug_print_count_ < 5) {
+                    std::cout << "[unitree_bridge] EE payload valid pos=("
+                              << ee_debug[0] << ", " << ee_debug[1] << ", " << ee_debug[2]
+                              << ") quat=(" << ee_debug[3] << ", " << ee_debug[4] << ", "
+                              << ee_debug[5] << ", " << ee_debug[6] << ") t="
+                              << ee_debug[11] << std::endl;
+                    ++ee_debug_print_count_;
+                }
             }
             highstate->unlockAndPublish();
         }

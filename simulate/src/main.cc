@@ -18,6 +18,10 @@
 #undef private
 
 #include <chrono>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -47,6 +51,9 @@ extern "C"
 #include <mach-o/dyld.h>
 #endif
 #include <sys/errno.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 }
@@ -104,6 +111,166 @@ namespace
   mjtNum *ctrlnoise = nullptr;
 
   using Seconds = std::chrono::duration<double>;
+
+  constexpr int kHighLevelDebugUdpPort = 39001;
+  constexpr mjtNum kDebugFrameAxisLength = 0.14;
+  constexpr mjtNum kDebugFrameAxisWidth = 0.008;
+
+  struct HighLevelDebugPose
+  {
+    bool target_valid = false;
+    bool ee_valid = false;
+    std::array<mjtNum, 3> target_pos{0.0, 0.0, 0.0};
+    std::array<mjtNum, 4> target_quat{1.0, 0.0, 0.0, 0.0};
+    std::array<mjtNum, 3> ee_pos{0.0, 0.0, 0.0};
+    std::array<mjtNum, 4> ee_quat{1.0, 0.0, 0.0, 0.0};
+    double progress = 0.0;
+    double error = 0.0;
+  };
+
+  std::mutex debug_pose_mutex;
+  HighLevelDebugPose debug_pose;
+
+  void NormalizeQuat(std::array<mjtNum, 4>& quat)
+  {
+    const mjtNum norm = std::sqrt(
+        quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]);
+    if (norm < mjMINVAL) {
+      quat = {1.0, 0.0, 0.0, 0.0};
+      return;
+    }
+    for (mjtNum& value : quat) {
+      value /= norm;
+    }
+  }
+
+  void AddSphere(mjvScene* scene, const std::array<mjtNum, 3>& pos, mjtNum radius, const float rgba[4])
+  {
+    if (!scene || scene->ngeom >= scene->maxgeom) {
+      return;
+    }
+    mjtNum size[3] = {radius, radius, radius};
+    mjtNum mat[9] = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    mjv_initGeom(&scene->geoms[scene->ngeom++], mjGEOM_SPHERE, size, pos.data(), mat, rgba);
+  }
+
+  void AddArrow(
+      mjvScene* scene,
+      const std::array<mjtNum, 3>& start,
+      const std::array<mjtNum, 3>& end,
+      mjtNum width,
+      const float rgba[4])
+  {
+    if (!scene || scene->ngeom >= scene->maxgeom) {
+      return;
+    }
+    mjvGeom* geom = &scene->geoms[scene->ngeom++];
+    mjv_initGeom(geom, mjGEOM_ARROW, nullptr, nullptr, nullptr, rgba);
+    mjv_connector(geom, mjGEOM_ARROW, width, start.data(), end.data());
+    for (int i = 0; i < 4; ++i) {
+      geom->rgba[i] = rgba[i];
+    }
+  }
+
+  void AddFrame(
+      mjvScene* scene,
+      const std::array<mjtNum, 3>& pos,
+      const std::array<mjtNum, 4>& quat,
+      mjtNum length,
+      mjtNum width,
+      bool target)
+  {
+    std::array<mjtNum, 4> q = quat;
+    NormalizeQuat(q);
+    mjtNum rot[9];
+    mju_quat2Mat(rot, q.data());
+
+    const float red[4] = {1.0f, target ? 0.15f : 0.0f, 0.0f, 1.0f};
+    const float green[4] = {0.0f, 1.0f, target ? 0.15f : 0.0f, 1.0f};
+    const float blue[4] = {0.0f, target ? 0.25f : 0.0f, 1.0f, 1.0f};
+    const float* colors[3] = {red, green, blue};
+
+    for (int axis = 0; axis < 3; ++axis) {
+      std::array<mjtNum, 3> end = pos;
+      for (int row = 0; row < 3; ++row) {
+        end[row] += length * rot[3 * row + axis];
+      }
+      AddArrow(scene, pos, end, width, colors[axis]);
+    }
+  }
+
+  void UpdateDebugPoseFromPacket(const char* buffer)
+  {
+    int version = 0;
+    HighLevelDebugPose pose;
+    const int matched = std::sscanf(
+        buffer,
+        "HLCDBG %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+        &version,
+        &pose.target_pos[0],
+        &pose.target_pos[1],
+        &pose.target_pos[2],
+        &pose.target_quat[0],
+        &pose.target_quat[1],
+        &pose.target_quat[2],
+        &pose.target_quat[3],
+        &pose.ee_pos[0],
+        &pose.ee_pos[1],
+        &pose.ee_pos[2],
+        &pose.ee_quat[0],
+        &pose.ee_quat[1],
+        &pose.ee_quat[2],
+        &pose.ee_quat[3],
+        &pose.progress,
+        &pose.error);
+    if (version != 1 || matched != 17) {
+      return;
+    }
+
+    pose.target_valid = true;
+    pose.ee_valid = true;
+    NormalizeQuat(pose.target_quat);
+    NormalizeQuat(pose.ee_quat);
+
+    std::lock_guard<std::mutex> lock(debug_pose_mutex);
+    debug_pose = pose;
+  }
+
+  void HighLevelDebugUdpThread()
+  {
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+      std::cerr << "[DebugVis] Failed to open UDP socket: " << std::strerror(errno) << std::endl;
+      return;
+    }
+
+    int reuse = 1;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(kHighLevelDebugUdpPort);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+      std::cerr << "[DebugVis] Failed to bind UDP port " << kHighLevelDebugUdpPort
+                << ": " << std::strerror(errno) << std::endl;
+      ::close(fd);
+      return;
+    }
+
+    std::cout << "[DebugVis] Listening for HLC target poses on UDP port "
+              << kHighLevelDebugUdpPort << std::endl;
+
+    char buffer[512];
+    while (true) {
+      const ssize_t n = ::recv(fd, buffer, sizeof(buffer) - 1, 0);
+      if (n <= 0) {
+        continue;
+      }
+      buffer[n] = '\0';
+      UpdateDebugPoseFromPacket(buffer);
+    }
+  }
 
   //---------------------------------------- plugin handling -----------------------------------------
 
@@ -531,8 +698,75 @@ namespace
         }
       } // release std::lock_guard<std::mutex>
     }
+	  }
+	} // namespace
+
+extern "C" void UnitreeMujocoDebugAppendGeoms(const mjModel* model, const mjData* data, mjvScene* scene)
+{
+  if (!model || !data || !scene) {
+    return;
   }
-} // namespace
+
+  HighLevelDebugPose pose;
+  {
+    std::lock_guard<std::mutex> lock(debug_pose_mutex);
+    pose = debug_pose;
+  }
+
+  if (pose.target_valid) {
+    const float target_rgba[4] = {1.0f, 0.78f, 0.0f, 0.9f};
+    AddSphere(scene, pose.target_pos, 0.035, target_rgba);
+    AddFrame(
+        scene,
+        pose.target_pos,
+        pose.target_quat,
+        kDebugFrameAxisLength,
+        kDebugFrameAxisWidth,
+        true);
+  }
+
+  std::array<mjtNum, 3> gripper_pos = pose.ee_pos;
+  std::array<mjtNum, 4> gripper_quat = pose.ee_quat;
+  bool gripper_valid = pose.ee_valid;
+
+  static const mjModel* cached_model = nullptr;
+  static int link7_body_id = -1;
+  static int link8_body_id = -1;
+  static int link6_body_id = -1;
+  if (cached_model != model) {
+    cached_model = model;
+    link7_body_id = mj_name2id(model, mjOBJ_BODY, "link7");
+    link8_body_id = mj_name2id(model, mjOBJ_BODY, "link8");
+    link6_body_id = mj_name2id(model, mjOBJ_BODY, "link6");
+  }
+
+  if (link7_body_id >= 0 && link8_body_id >= 0) {
+    const mjtNum* p7 = data->xpos + 3 * link7_body_id;
+    const mjtNum* p8 = data->xpos + 3 * link8_body_id;
+    for (int i = 0; i < 3; ++i) {
+      gripper_pos[i] = 0.5 * (p7[i] + p8[i]);
+    }
+    gripper_valid = true;
+  }
+  if (link6_body_id >= 0) {
+    const mjtNum* q = data->xquat + 4 * link6_body_id;
+    for (int i = 0; i < 4; ++i) {
+      gripper_quat[i] = q[i];
+    }
+  }
+
+  if (gripper_valid) {
+    const float gripper_rgba[4] = {0.0f, 0.9f, 1.0f, 0.9f};
+    AddSphere(scene, gripper_pos, 0.025, gripper_rgba);
+    AddFrame(
+        scene,
+        gripper_pos,
+        gripper_quat,
+        0.11,
+        0.006,
+        false);
+  }
+}
 
 //-------------------------------------- physics_thread --------------------------------------------
 
@@ -684,6 +918,8 @@ int main(int argc, char **argv)
     &cam, &opt, &pert, /* is_passive = */ false);
 
   std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
+  std::thread debug_vis_thread(HighLevelDebugUdpThread);
+  debug_vis_thread.detach();
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
