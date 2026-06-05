@@ -13,6 +13,7 @@
 // Copyright Drew Noakes 2013-2016
 
 #include "joystick.h"
+#include <cstdint>       // <--- 增加这一行！
 
 Joystick::Joystick()
 {

@@ -119,9 +119,12 @@ namespace
   struct HighLevelDebugPose
   {
     bool target_valid = false;
+    bool sub_target_valid = false;
     bool ee_valid = false;
     std::array<mjtNum, 3> target_pos{0.0, 0.0, 0.0};
     std::array<mjtNum, 4> target_quat{1.0, 0.0, 0.0, 0.0};
+    std::array<mjtNum, 3> sub_target_pos{0.0, 0.0, 0.0};
+    std::array<mjtNum, 4> sub_target_quat{1.0, 0.0, 0.0, 0.0};
     std::array<mjtNum, 3> ee_pos{0.0, 0.0, 0.0};
     std::array<mjtNum, 4> ee_quat{1.0, 0.0, 0.0, 0.0};
     double progress = 0.0;
@@ -203,9 +206,9 @@ namespace
   {
     int version = 0;
     HighLevelDebugPose pose;
-    const int matched = std::sscanf(
+    int matched = std::sscanf(
         buffer,
-        "HLCDBG %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+        "HLCDBG %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
         &version,
         &pose.target_pos[0],
         &pose.target_pos[1],
@@ -214,6 +217,13 @@ namespace
         &pose.target_quat[1],
         &pose.target_quat[2],
         &pose.target_quat[3],
+        &pose.sub_target_pos[0],
+        &pose.sub_target_pos[1],
+        &pose.sub_target_pos[2],
+        &pose.sub_target_quat[0],
+        &pose.sub_target_quat[1],
+        &pose.sub_target_quat[2],
+        &pose.sub_target_quat[3],
         &pose.ee_pos[0],
         &pose.ee_pos[1],
         &pose.ee_pos[2],
@@ -223,8 +233,33 @@ namespace
         &pose.ee_quat[3],
         &pose.progress,
         &pose.error);
-    if (version != 1 || matched != 17) {
-      return;
+    if (version == 2 && matched == 24) {
+      pose.sub_target_valid = true;
+      NormalizeQuat(pose.sub_target_quat);
+    } else {
+      matched = std::sscanf(
+          buffer,
+          "HLCDBG %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+          &version,
+          &pose.target_pos[0],
+          &pose.target_pos[1],
+          &pose.target_pos[2],
+          &pose.target_quat[0],
+          &pose.target_quat[1],
+          &pose.target_quat[2],
+          &pose.target_quat[3],
+          &pose.ee_pos[0],
+          &pose.ee_pos[1],
+          &pose.ee_pos[2],
+          &pose.ee_quat[0],
+          &pose.ee_quat[1],
+          &pose.ee_quat[2],
+          &pose.ee_quat[3],
+          &pose.progress,
+          &pose.error);
+      if (version != 1 || matched != 17) {
+        return;
+      }
     }
 
     pose.target_valid = true;
@@ -722,6 +757,18 @@ extern "C" void UnitreeMujocoDebugAppendGeoms(const mjModel* model, const mjData
         pose.target_quat,
         kDebugFrameAxisLength,
         kDebugFrameAxisWidth,
+        true);
+  }
+
+  if (pose.sub_target_valid) {
+    const float sub_target_rgba[4] = {1.0f, 0.0f, 0.9f, 0.9f};
+    AddSphere(scene, pose.sub_target_pos, 0.028, sub_target_rgba);
+    AddFrame(
+        scene,
+        pose.sub_target_pos,
+        pose.sub_target_quat,
+        0.12,
+        0.007,
         true);
   }
 
