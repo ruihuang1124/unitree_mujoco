@@ -228,7 +228,7 @@
         </body>
       </body>
 
-      <body name="arm_base_link" pos="0.15 0.0 0.08">
+      <body name="arm_base_link" pos="0.13949 0.0 0.086">
         <inertial pos="-0.00473641164191482 2.56829134630247E-05 0.041451518036016" quat="1 0 0 0" mass="1.02" diaginertia="0.00267433 0.00282612 0.00089624" />
         <geom type="mesh"  density="0" rgba="0.698039 0.698039 0.698039 1" mesh="arm_base_link" class = 'visual'/>
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="arm_base_link" />

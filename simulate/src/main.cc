@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -526,6 +528,54 @@ namespace
     return mnew;
   }
 
+  // Publish the task object's ground-truth world pose through a small atomic
+  // YAML file.  The controller treats this as a replaceable perception input:
+  // a camera/estimator can publish the same schema later without changing the
+  // pick-place state machine.
+  void PublishTaskObjectPose(const mjModel* model, const mjData* data)
+  {
+    constexpr double kPublishPeriodS = 0.02;
+    constexpr const char* kBodyName = "pick_object";
+    constexpr const char* kPoseFile = "/tmp/mujoco_pick_object_pose.yaml";
+    constexpr const char* kTempFile = "/tmp/mujoco_pick_object_pose.yaml.tmp";
+
+    static const mjModel* cached_model = nullptr;
+    static int object_body_id = -1;
+    static double last_publish_time_s = -kPublishPeriodS;
+    if (!model || !data) {
+      return;
+    }
+    if (cached_model != model) {
+      cached_model = model;
+      object_body_id = mj_name2id(model, mjOBJ_BODY, kBodyName);
+      last_publish_time_s = -kPublishPeriodS;
+      if (object_body_id >= 0) {
+        std::cout << "[PickPlace] Publishing '" << kBodyName << "' world pose to " << kPoseFile << std::endl;
+      }
+    }
+    if (object_body_id < 0) {
+      return;
+    }
+    if (data->time >= last_publish_time_s && data->time - last_publish_time_s < kPublishPeriodS) {
+      return;
+    }
+    last_publish_time_s = data->time;
+
+    const mjtNum* pos = data->xpos + 3 * object_body_id;
+    const mjtNum* quat = data->xquat + 4 * object_body_id;
+    std::ofstream out(kTempFile, std::ios::trunc);
+    if (!out.is_open()) {
+      return;
+    }
+    out << std::fixed << std::setprecision(7);
+    out << "body_name: " << kBodyName << "\n";
+    out << "sim_time_s: " << data->time << "\n";
+    out << "position_w: [" << pos[0] << ", " << pos[1] << ", " << pos[2] << "]\n";
+    out << "quaternion_wxyz: [" << quat[0] << ", " << quat[1] << ", " << quat[2] << ", " << quat[3] << "]\n";
+    out.close();
+    (void)std::rename(kTempFile, kPoseFile);
+  }
+
   // simulate in background thread (while rendering in main thread)
   void PhysicsLoop(mj::Simulate &sim)
   {
@@ -720,6 +770,7 @@ namespace
             if (stepped)
             {
               sim.AddToHistory();
+              PublishTaskObjectPose(m, d);
             }
           }
 
@@ -728,6 +779,7 @@ namespace
           {
             // run mj_forward, to update rendering and joint sliders
             mj_forward(m, d);
+            PublishTaskObjectPose(m, d);
             sim.speed_changed = true;
           }
         }
