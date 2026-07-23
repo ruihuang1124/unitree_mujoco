@@ -23,10 +23,12 @@ public:
     : mj_model_(model), mj_data_(data)
     {
         _check_sensor();
-        if (ee_link7_body_id_ >= 0 || ee_link8_body_id_ >= 0 || ee_quat_body_id_ >= 0) {
+        if (ee_link7_body_id_ >= 0 || ee_link8_body_id_ >= 0 || ee_quat_body_id_ >= 0 ||
+            fake_ee_body_id_ >= 0) {
             std::cout << "[unitree_bridge] EE debug body ids: link7=" << ee_link7_body_id_
                       << " link8=" << ee_link8_body_id_
-                      << " quat_body(link6)=" << ee_quat_body_id_ << std::endl;
+                      << " quat_body(link6)=" << ee_quat_body_id_
+                      << " tracked_body(fake_ee)=" << fake_ee_body_id_ << std::endl;
         }
         if(param::config.print_scene_information == 1) {
             printSceneInformation();
@@ -91,6 +93,7 @@ protected:
     int ee_link7_body_id_ = -1;
     int ee_link8_body_id_ = -1;
     int ee_quat_body_id_ = -1;
+    int fake_ee_body_id_ = -1;
     int ee_debug_print_count_ = 0;
 
     int secondary_imu_quat_adr_ = -1;
@@ -142,6 +145,7 @@ protected:
         ee_link7_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link7");
         ee_link8_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link8");
         ee_quat_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "link6");
+        fake_ee_body_id_ = mj_name2id(mj_model_, mjOBJ_BODY, "fake_ee");
 
         // Secondary IMU quaternion
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "secondary_imu_quat");
@@ -257,28 +261,45 @@ public:
             if (ee_link7_body_id_ >= 0 && ee_link8_body_id_ >= 0 && ee_quat_body_id_ >= 0) {
                 const mjtNum* link7_pos = mj_data_->xpos + 3 * ee_link7_body_id_;
                 const mjtNum* link8_pos = mj_data_->xpos + 3 * ee_link8_body_id_;
-                const mjtNum* ee_quat = mj_data_->xquat + 4 * ee_quat_body_id_;
-                const double ee_x = 0.5 * (link7_pos[0] + link8_pos[0]);
-                const double ee_y = 0.5 * (link7_pos[1] + link8_pos[1]);
-                const double ee_z = 0.5 * (link7_pos[2] + link8_pos[2]);
+                const mjtNum* actual_quat = mj_data_->xquat + 4 * ee_quat_body_id_;
+                const double actual_x = 0.5 * (link7_pos[0] + link8_pos[0]);
+                const double actual_y = 0.5 * (link7_pos[1] + link8_pos[1]);
+                const double actual_z = 0.5 * (link7_pos[2] + link8_pos[2]);
 
-                ee_debug[0] = static_cast<float>(ee_x);
-                ee_debug[1] = static_cast<float>(ee_y);
-                ee_debug[2] = static_cast<float>(ee_z);
-                ee_debug[3] = static_cast<float>(ee_quat[0]);
-                ee_debug[4] = static_cast<float>(ee_quat[1]);
-                ee_debug[5] = static_cast<float>(ee_quat[2]);
-                ee_debug[6] = static_cast<float>(ee_quat[3]);
-                ee_debug[7] = static_cast<float>(ee_x);
-                ee_debug[8] = static_cast<float>(ee_y);
-                ee_debug[9] = static_cast<float>(ee_z);
+                // Match the real OptiTrack path: publish the measured marker
+                // rigid-body pose, not the trained virtual EE pose.  The robot
+                // deployment applies the calibrated T_fake_actual transform.
+                const mjtNum* measured_pos = fake_ee_body_id_ >= 0
+                                                 ? mj_data_->xpos + 3 * fake_ee_body_id_
+                                                 : nullptr;
+                const mjtNum* measured_quat = fake_ee_body_id_ >= 0
+                                                  ? mj_data_->xquat + 4 * fake_ee_body_id_
+                                                  : actual_quat;
+                const double measured_x = measured_pos ? measured_pos[0] : actual_x;
+                const double measured_y = measured_pos ? measured_pos[1] : actual_y;
+                const double measured_z = measured_pos ? measured_pos[2] : actual_z;
+
+                ee_debug[0] = static_cast<float>(measured_x);
+                ee_debug[1] = static_cast<float>(measured_y);
+                ee_debug[2] = static_cast<float>(measured_z);
+                ee_debug[3] = static_cast<float>(measured_quat[0]);
+                ee_debug[4] = static_cast<float>(measured_quat[1]);
+                ee_debug[5] = static_cast<float>(measured_quat[2]);
+                ee_debug[6] = static_cast<float>(measured_quat[3]);
+                // Keep the actual EE position in the auxiliary payload so the
+                // visualization/diagnostics can compare both frames directly.
+                ee_debug[7] = static_cast<float>(actual_x);
+                ee_debug[8] = static_cast<float>(actual_y);
+                ee_debug[9] = static_cast<float>(actual_z);
                 ee_debug[10] = 1.0f;
                 ee_debug[11] = static_cast<float>(mj_data_->time);
                 if (ee_debug_print_count_ < 5) {
-                    std::cout << "[unitree_bridge] EE payload valid pos=("
+                    std::cout << "[unitree_bridge] fake EE payload valid measured_pos=("
                               << ee_debug[0] << ", " << ee_debug[1] << ", " << ee_debug[2]
                               << ") quat=(" << ee_debug[3] << ", " << ee_debug[4] << ", "
-                              << ee_debug[5] << ", " << ee_debug[6] << ") t="
+                              << ee_debug[5] << ", " << ee_debug[6] << ") actual_pos=("
+                              << ee_debug[7] << ", " << ee_debug[8] << ", " << ee_debug[9]
+                              << ") t="
                               << ee_debug[11] << std::endl;
                     ++ee_debug_print_count_;
                 }

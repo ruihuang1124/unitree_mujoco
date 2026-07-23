@@ -17,6 +17,7 @@
 #include "glfw_adapter.h"
 #undef private
 
+#include <algorithm>
 #include <chrono>
 #include <array>
 #include <atomic>
@@ -32,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -528,32 +530,67 @@ namespace
     return mnew;
   }
 
-  // Publish the task object's ground-truth world pose through a small atomic
-  // YAML file.  The controller treats this as a replaceable perception input:
-  // a camera/estimator can publish the same schema later without changing the
-  // pick-place state machine.
+  // Publish task ground-truth poses through atomic YAML files.  The original
+  // single-object file remains stable for key-4 pick/place.  The scene file is
+  // a replaceable perception interface for the door, wiping and drawer tasks.
   void PublishTaskObjectPose(const mjModel* model, const mjData* data)
   {
     constexpr double kPublishPeriodS = 0.02;
-    constexpr const char* kBodyName = "pick_object";
-    constexpr const char* kPoseFile = "/tmp/mujoco_pick_object_pose.yaml";
-    constexpr const char* kTempFile = "/tmp/mujoco_pick_object_pose.yaml.tmp";
+    constexpr const char* kPickBodyName = "pick_object";
+    constexpr const char* kPickPoseFile = "/tmp/mujoco_pick_object_pose.yaml";
+    constexpr const char* kPickTempFile = "/tmp/mujoco_pick_object_pose.yaml.tmp";
+    constexpr const char* kScenePoseFile = "/tmp/mujoco_scene_task_poses.yaml";
+    constexpr const char* kSceneTempFile = "/tmp/mujoco_scene_task_poses.yaml.tmp";
+    constexpr std::array<const char*, 10> kSceneBodyNames = {
+        "door_handle",
+        "table_eraser",
+        "board_eraser",
+        "table_wipe_frame",
+        "blackboard_wipe_frame",
+        "drawer_handle",
+        "drawer_bottle",
+        "drawer_drop_frame",
+        "trolley_handle",
+        "trolley_pull_target"};
+    // A body may expose the coordinate of the articulated joint that moves it.
+    // nullptr means that only the world pose is published for that body.
+    constexpr std::array<const char*, kSceneBodyNames.size()> kSceneJointNames = {
+        "door_hinge", nullptr, nullptr, nullptr, nullptr, "drawer_slide", nullptr, nullptr,
+        nullptr, nullptr};
 
     static const mjModel* cached_model = nullptr;
-    static int object_body_id = -1;
+    static int pick_body_id = -1;
+    static std::array<int, kSceneBodyNames.size()> scene_body_ids{};
+    static std::array<int, kSceneBodyNames.size()> scene_joint_ids{};
     static double last_publish_time_s = -kPublishPeriodS;
     if (!model || !data) {
       return;
     }
     if (cached_model != model) {
       cached_model = model;
-      object_body_id = mj_name2id(model, mjOBJ_BODY, kBodyName);
+      pick_body_id = mj_name2id(model, mjOBJ_BODY, kPickBodyName);
+      for (size_t i = 0; i < kSceneBodyNames.size(); ++i) {
+        scene_body_ids[i] = mj_name2id(model, mjOBJ_BODY, kSceneBodyNames[i]);
+        scene_joint_ids[i] = kSceneJointNames[i]
+                                 ? mj_name2id(model, mjOBJ_JOINT, kSceneJointNames[i])
+                                 : -1;
+      }
       last_publish_time_s = -kPublishPeriodS;
-      if (object_body_id >= 0) {
-        std::cout << "[PickPlace] Publishing '" << kBodyName << "' world pose to " << kPoseFile << std::endl;
+      if (pick_body_id >= 0) {
+        std::cout << "[PickPlace] Publishing '" << kPickBodyName << "' world pose to "
+                  << kPickPoseFile << std::endl;
+      }
+      if (std::any_of(
+              scene_body_ids.begin(),
+              scene_body_ids.end(),
+              [](int id) { return id >= 0; })) {
+        std::cout << "[SceneTasks] Publishing door/drawer/trolley/tool/surface poses to "
+                  << kScenePoseFile << std::endl;
       }
     }
-    if (object_body_id < 0) {
+    const bool has_scene_objects = std::any_of(
+        scene_body_ids.begin(), scene_body_ids.end(), [](int id) { return id >= 0; });
+    if (pick_body_id < 0 && !has_scene_objects) {
       return;
     }
     if (data->time >= last_publish_time_s && data->time - last_publish_time_s < kPublishPeriodS) {
@@ -561,19 +598,492 @@ namespace
     }
     last_publish_time_s = data->time;
 
-    const mjtNum* pos = data->xpos + 3 * object_body_id;
-    const mjtNum* quat = data->xquat + 4 * object_body_id;
-    std::ofstream out(kTempFile, std::ios::trunc);
+    if (pick_body_id >= 0) {
+      const mjtNum* pos = data->xpos + 3 * pick_body_id;
+      const mjtNum* quat = data->xquat + 4 * pick_body_id;
+      std::ofstream out(kPickTempFile, std::ios::trunc);
+      if (out.is_open()) {
+        out << std::fixed << std::setprecision(7);
+        out << "body_name: " << kPickBodyName << "\n";
+        out << "sim_time_s: " << data->time << "\n";
+        out << "position_w: [" << pos[0] << ", " << pos[1] << ", " << pos[2] << "]\n";
+        out << "quaternion_wxyz: [" << quat[0] << ", " << quat[1] << ", " << quat[2] << ", " << quat[3] << "]\n";
+        out.close();
+        (void)std::rename(kPickTempFile, kPickPoseFile);
+      }
+    }
+
+    if (has_scene_objects) {
+      std::ofstream out(kSceneTempFile, std::ios::trunc);
+      if (!out.is_open()) {
+        return;
+      }
+      out << std::fixed << std::setprecision(7);
+      out << "sim_time_s: " << data->time << "\n";
+      out << "objects:\n";
+      for (size_t i = 0; i < kSceneBodyNames.size(); ++i) {
+        const int body_id = scene_body_ids[i];
+        if (body_id < 0) {
+          continue;
+        }
+        const mjtNum* pos = data->xpos + 3 * body_id;
+        const mjtNum* quat = data->xquat + 4 * body_id;
+        out << "  " << kSceneBodyNames[i] << ":\n";
+        out << "    position_w: [" << pos[0] << ", " << pos[1] << ", " << pos[2] << "]\n";
+        out << "    quaternion_wxyz: [" << quat[0] << ", " << quat[1] << ", "
+            << quat[2] << ", " << quat[3] << "]\n";
+        if (scene_joint_ids[i] >= 0) {
+          const int qpos_address = model->jnt_qposadr[scene_joint_ids[i]];
+          out << "    joint_name: " << kSceneJointNames[i] << "\n";
+          out << "    joint_position: " << data->qpos[qpos_address] << "\n";
+        }
+      }
+      out.close();
+      (void)std::rename(kSceneTempFile, kScenePoseFile);
+    }
+  }
+
+  std::array<mjtNum, 4> QuatConjugate(const std::array<mjtNum, 4>& quat)
+  {
+    return {quat[0], -quat[1], -quat[2], -quat[3]};
+  }
+
+  std::array<mjtNum, 4> QuatMultiply(
+      const std::array<mjtNum, 4>& lhs,
+      const std::array<mjtNum, 4>& rhs)
+  {
+    return {
+        lhs[0] * rhs[0] - lhs[1] * rhs[1] - lhs[2] * rhs[2] - lhs[3] * rhs[3],
+        lhs[0] * rhs[1] + lhs[1] * rhs[0] + lhs[2] * rhs[3] - lhs[3] * rhs[2],
+        lhs[0] * rhs[2] - lhs[1] * rhs[3] + lhs[2] * rhs[0] + lhs[3] * rhs[1],
+        lhs[0] * rhs[3] + lhs[1] * rhs[2] - lhs[2] * rhs[1] + lhs[3] * rhs[0]};
+  }
+
+  std::array<mjtNum, 3> QuatRotate(
+      const std::array<mjtNum, 4>& quat,
+      const std::array<mjtNum, 3>& vector)
+  {
+    const std::array<mjtNum, 4> vector_quat = {0.0, vector[0], vector[1], vector[2]};
+    const std::array<mjtNum, 4> rotated =
+        QuatMultiply(QuatMultiply(quat, vector_quat), QuatConjugate(quat));
+    return {rotated[1], rotated[2], rotated[3]};
+  }
+
+  // Simulation-only grasp aid for the dedicated blackboard-wiping scene.
+  //
+  // A light free body held by two mesh fingers is very sensitive to contact
+  // tuning and small sim2sim tracking errors.  Once the fingers start closing
+  // near the eraser, preserve the current eraser-to-gripper transform and move
+  // the eraser with the gripper.  Requiring blackboard_eraser_tray keeps this
+  // behavior out of the other task scenes and all robot-side control code.
+  void UpdateBlackboardEraserGraspLatch(const mjModel* model, mjData* data)
+  {
+    constexpr const char* kSceneMarkerGeomName = "blackboard_eraser_tray";
+    constexpr const char* kEraserBodyName = "board_eraser";
+    constexpr const char* kEraserJointName = "board_eraser_freejoint";
+    constexpr const char* kGripperBodyName = "gripper_base";
+    constexpr const char* kFingerBodyNameA = "link7";
+    constexpr const char* kFingerBodyNameB = "link8";
+    constexpr const char* kFingerJointNameA = "joint7";
+    constexpr const char* kFingerJointNameB = "joint8";
+    constexpr mjtNum kAttachDistanceM = 0.065;
+    // Fully open is approximately 0.070 m.  The 50 mm-wide eraser can stop the
+    // physical fingers before they reach the nominal zero-position command.
+    constexpr mjtNum kClosingOpeningM = 0.064;
+
+    static const mjModel* cached_model = nullptr;
+    static int scene_marker_geom_id = -1;
+    static int eraser_body_id = -1;
+    static int eraser_joint_id = -1;
+    static int gripper_body_id = -1;
+    static int finger_body_id_a = -1;
+    static int finger_body_id_b = -1;
+    static int finger_joint_id_a = -1;
+    static int finger_joint_id_b = -1;
+    static bool attached = false;
+    static mjtNum last_sim_time_s = -1.0;
+    static std::array<mjtNum, 3> eraser_pos_gripper{0.0, 0.0, 0.0};
+    static std::array<mjtNum, 4> eraser_quat_gripper{1.0, 0.0, 0.0, 0.0};
+
+    if (!model || !data) {
+      return;
+    }
+
+    const bool data_reset =
+        last_sim_time_s >= 0.0 && data->time + mjMINVAL < last_sim_time_s;
+    if (cached_model != model || data_reset) {
+      cached_model = model;
+      scene_marker_geom_id = mj_name2id(model, mjOBJ_GEOM, kSceneMarkerGeomName);
+      eraser_body_id = mj_name2id(model, mjOBJ_BODY, kEraserBodyName);
+      eraser_joint_id = mj_name2id(model, mjOBJ_JOINT, kEraserJointName);
+      gripper_body_id = mj_name2id(model, mjOBJ_BODY, kGripperBodyName);
+      finger_body_id_a = mj_name2id(model, mjOBJ_BODY, kFingerBodyNameA);
+      finger_body_id_b = mj_name2id(model, mjOBJ_BODY, kFingerBodyNameB);
+      finger_joint_id_a = mj_name2id(model, mjOBJ_JOINT, kFingerJointNameA);
+      finger_joint_id_b = mj_name2id(model, mjOBJ_JOINT, kFingerJointNameB);
+      attached = false;
+      eraser_pos_gripper = {0.0, 0.0, 0.0};
+      eraser_quat_gripper = {1.0, 0.0, 0.0, 0.0};
+    }
+    last_sim_time_s = data->time;
+
+    if (scene_marker_geom_id < 0 || eraser_body_id < 0 || eraser_joint_id < 0 ||
+        gripper_body_id < 0 || finger_body_id_a < 0 || finger_body_id_b < 0 ||
+        finger_joint_id_a < 0 || finger_joint_id_b < 0 ||
+        model->jnt_type[eraser_joint_id] != mjJNT_FREE) {
+      return;
+    }
+
+    const int eraser_qpos_adr = model->jnt_qposadr[eraser_joint_id];
+    const int eraser_dof_adr = model->jnt_dofadr[eraser_joint_id];
+    const int finger_qpos_adr_a = model->jnt_qposadr[finger_joint_id_a];
+    const int finger_qpos_adr_b = model->jnt_qposadr[finger_joint_id_b];
+    if (eraser_qpos_adr < 0 || eraser_qpos_adr + 6 >= model->nq ||
+        eraser_dof_adr < 0 || eraser_dof_adr + 5 >= model->nv ||
+        finger_qpos_adr_a < 0 || finger_qpos_adr_a >= model->nq ||
+        finger_qpos_adr_b < 0 || finger_qpos_adr_b >= model->nq) {
+      return;
+    }
+
+    const mjtNum* gripper_pos_raw = data->xpos + 3 * gripper_body_id;
+    const mjtNum* gripper_quat_raw = data->xquat + 4 * gripper_body_id;
+    const mjtNum* eraser_pos_raw = data->xpos + 3 * eraser_body_id;
+    const mjtNum* eraser_quat_raw = data->xquat + 4 * eraser_body_id;
+    const mjtNum* finger_pos_a = data->xpos + 3 * finger_body_id_a;
+    const mjtNum* finger_pos_b = data->xpos + 3 * finger_body_id_b;
+
+    std::array<mjtNum, 4> gripper_quat = {
+        gripper_quat_raw[0], gripper_quat_raw[1],
+        gripper_quat_raw[2], gripper_quat_raw[3]};
+    NormalizeQuat(gripper_quat);
+
+    if (!attached) {
+      const std::array<mjtNum, 3> finger_center = {
+          0.5 * (finger_pos_a[0] + finger_pos_b[0]),
+          0.5 * (finger_pos_a[1] + finger_pos_b[1]),
+          0.5 * (finger_pos_a[2] + finger_pos_b[2])};
+      const std::array<mjtNum, 3> finger_to_eraser = {
+          eraser_pos_raw[0] - finger_center[0],
+          eraser_pos_raw[1] - finger_center[1],
+          eraser_pos_raw[2] - finger_center[2]};
+      const mjtNum distance_m = std::sqrt(
+          finger_to_eraser[0] * finger_to_eraser[0] +
+          finger_to_eraser[1] * finger_to_eraser[1] +
+          finger_to_eraser[2] * finger_to_eraser[2]);
+      const mjtNum finger_opening_m =
+          std::abs(data->qpos[finger_qpos_adr_a]) +
+          std::abs(data->qpos[finger_qpos_adr_b]);
+
+      if (distance_m <= kAttachDistanceM && finger_opening_m <= kClosingOpeningM) {
+        const std::array<mjtNum, 4> gripper_quat_inv = QuatConjugate(gripper_quat);
+        const std::array<mjtNum, 3> gripper_to_eraser = {
+            eraser_pos_raw[0] - gripper_pos_raw[0],
+            eraser_pos_raw[1] - gripper_pos_raw[1],
+            eraser_pos_raw[2] - gripper_pos_raw[2]};
+        const std::array<mjtNum, 4> eraser_quat = {
+            eraser_quat_raw[0], eraser_quat_raw[1],
+            eraser_quat_raw[2], eraser_quat_raw[3]};
+        eraser_pos_gripper = QuatRotate(gripper_quat_inv, gripper_to_eraser);
+        eraser_quat_gripper = QuatMultiply(gripper_quat_inv, eraser_quat);
+        NormalizeQuat(eraser_quat_gripper);
+        attached = true;
+        std::cout << "[BlackboardWipe] Simulation grasp latch attached board_eraser"
+                  << " (distance=" << distance_m
+                  << " m, finger_opening=" << finger_opening_m << " m)"
+                  << std::endl;
+      }
+    }
+
+    if (!attached) {
+      return;
+    }
+
+    const std::array<mjtNum, 3> eraser_offset_w =
+        QuatRotate(gripper_quat, eraser_pos_gripper);
+    std::array<mjtNum, 4> eraser_quat_w =
+        QuatMultiply(gripper_quat, eraser_quat_gripper);
+    NormalizeQuat(eraser_quat_w);
+
+    data->qpos[eraser_qpos_adr + 0] = gripper_pos_raw[0] + eraser_offset_w[0];
+    data->qpos[eraser_qpos_adr + 1] = gripper_pos_raw[1] + eraser_offset_w[1];
+    data->qpos[eraser_qpos_adr + 2] = gripper_pos_raw[2] + eraser_offset_w[2];
+    for (int i = 0; i < 4; ++i) {
+      data->qpos[eraser_qpos_adr + 3 + i] = eraser_quat_w[i];
+    }
+    for (int i = 0; i < 6; ++i) {
+      data->qvel[eraser_dof_adr + i] = 0.0;
+    }
+
+    // Refresh body transforms immediately so task-pose publishing and the
+    // renderer see the latched pose from this same physics step.
+    mj_forward(model, data);
+  }
+
+  void PublishMujocoPairDiagnostic(const mjModel* model, const mjData* data)
+  {
+    constexpr const char* kBaseBodyName = "base_link";
+    constexpr const char* kEeOrientationBodyName = "link6";
+    constexpr const char* kEeFingerBodyNameA = "link7";
+    constexpr const char* kEeFingerBodyNameB = "link8";
+
+    static const mjModel* cached_model = nullptr;
+    static int base_body_id = -1;
+    static int ee_orientation_body_id = -1;
+    static int ee_finger_body_id_a = -1;
+    static int ee_finger_body_id_b = -1;
+    static double last_publish_time_s = -1.0;
+    static std::uint64_t seq = 0;
+    static bool warned_missing_body = false;
+    static std::ofstream out;
+
+    if (!param::config.record_mocap_pair) {
+      return;
+    }
+    if (!model || !data) {
+      return;
+    }
+    const double publish_rate_hz =
+        param::config.mocap_pair_rate > 0.0 ? param::config.mocap_pair_rate : 50.0;
+    const double publish_period_s = 1.0 / publish_rate_hz;
+    const std::string& csv_file = param::config.mocap_pair_csv;
+
+    if (cached_model != model) {
+      cached_model = model;
+      base_body_id = mj_name2id(model, mjOBJ_BODY, kBaseBodyName);
+      ee_orientation_body_id = mj_name2id(model, mjOBJ_BODY, kEeOrientationBodyName);
+      ee_finger_body_id_a = mj_name2id(model, mjOBJ_BODY, kEeFingerBodyNameA);
+      ee_finger_body_id_b = mj_name2id(model, mjOBJ_BODY, kEeFingerBodyNameB);
+      last_publish_time_s = -publish_period_s;
+      seq = 0;
+      warned_missing_body = false;
+      out.close();
+
+      if (base_body_id >= 0 && ee_orientation_body_id >= 0 &&
+          ee_finger_body_id_a >= 0 && ee_finger_body_id_b >= 0) {
+        out.open(csv_file, std::ios::trunc);
+        if (out.is_open()) {
+          out << "time_s,base_age_s,ee_age_s,base_seq,ee_seq,"
+              << "base_px,base_py,base_pz,base_qx,base_qy,base_qz,base_qw,"
+              << "ee_px,ee_py,ee_pz,ee_qx,ee_qy,ee_qz,ee_qw,"
+              << "ee_in_base_x,ee_in_base_y,ee_in_base_z,"
+              << "ee_in_base_qx,ee_in_base_qy,ee_in_base_qz,ee_in_base_qw\n";
+          out << std::fixed << std::setprecision(9);
+          std::cout << "[MujocoPairDiagnostic] Writing base_link -> piper_ee CSV to "
+                    << csv_file << " at " << publish_rate_hz << " Hz" << std::endl;
+        } else {
+          std::cerr << "[MujocoPairDiagnostic] Unable to open " << csv_file << std::endl;
+        }
+      }
+    }
+
+    if (base_body_id < 0 || ee_orientation_body_id < 0 ||
+        ee_finger_body_id_a < 0 || ee_finger_body_id_b < 0) {
+      if (!warned_missing_body) {
+        warned_missing_body = true;
+        std::cerr << "[MujocoPairDiagnostic] Missing one of required bodies: "
+                  << kBaseBodyName << ", " << kEeOrientationBodyName << ", "
+                  << kEeFingerBodyNameA << ", " << kEeFingerBodyNameB << std::endl;
+      }
+      return;
+    }
     if (!out.is_open()) {
       return;
     }
-    out << std::fixed << std::setprecision(7);
-    out << "body_name: " << kBodyName << "\n";
-    out << "sim_time_s: " << data->time << "\n";
-    out << "position_w: [" << pos[0] << ", " << pos[1] << ", " << pos[2] << "]\n";
-    out << "quaternion_wxyz: [" << quat[0] << ", " << quat[1] << ", " << quat[2] << ", " << quat[3] << "]\n";
-    out.close();
-    (void)std::rename(kTempFile, kPoseFile);
+    if (data->time >= last_publish_time_s &&
+        data->time - last_publish_time_s < publish_period_s) {
+      return;
+    }
+    last_publish_time_s = data->time;
+    ++seq;
+
+    const mjtNum* base_pos_raw = data->xpos + 3 * base_body_id;
+    const mjtNum* base_quat_raw = data->xquat + 4 * base_body_id;
+    const mjtNum* ee_quat_raw = data->xquat + 4 * ee_orientation_body_id;
+    const mjtNum* ee_pos_a_raw = data->xpos + 3 * ee_finger_body_id_a;
+    const mjtNum* ee_pos_b_raw = data->xpos + 3 * ee_finger_body_id_b;
+
+    const std::array<mjtNum, 3> base_pos = {base_pos_raw[0], base_pos_raw[1], base_pos_raw[2]};
+    std::array<mjtNum, 4> base_quat = {
+        base_quat_raw[0], base_quat_raw[1], base_quat_raw[2], base_quat_raw[3]};
+    const std::array<mjtNum, 3> ee_pos = {
+        0.5 * (ee_pos_a_raw[0] + ee_pos_b_raw[0]),
+        0.5 * (ee_pos_a_raw[1] + ee_pos_b_raw[1]),
+        0.5 * (ee_pos_a_raw[2] + ee_pos_b_raw[2])};
+    std::array<mjtNum, 4> ee_quat = {
+        ee_quat_raw[0], ee_quat_raw[1], ee_quat_raw[2], ee_quat_raw[3]};
+    NormalizeQuat(base_quat);
+    NormalizeQuat(ee_quat);
+
+    const std::array<mjtNum, 3> ee_delta_w = {
+        ee_pos[0] - base_pos[0],
+        ee_pos[1] - base_pos[1],
+        ee_pos[2] - base_pos[2]};
+    const std::array<mjtNum, 4> base_quat_inv = QuatConjugate(base_quat);
+    const std::array<mjtNum, 3> ee_pos_b = QuatRotate(base_quat_inv, ee_delta_w);
+    std::array<mjtNum, 4> ee_quat_b = QuatMultiply(base_quat_inv, ee_quat);
+    NormalizeQuat(ee_quat_b);
+
+    out << data->time << ','
+        << 0.0 << ',' << 0.0 << ','
+        << seq << ',' << seq << ','
+        << base_pos[0] << ',' << base_pos[1] << ',' << base_pos[2] << ','
+        << base_quat[1] << ',' << base_quat[2] << ',' << base_quat[3] << ',' << base_quat[0] << ','
+        << ee_pos[0] << ',' << ee_pos[1] << ',' << ee_pos[2] << ','
+        << ee_quat[1] << ',' << ee_quat[2] << ',' << ee_quat[3] << ',' << ee_quat[0] << ','
+        << ee_pos_b[0] << ',' << ee_pos_b[1] << ',' << ee_pos_b[2] << ','
+        << ee_quat_b[1] << ',' << ee_quat_b[2] << ',' << ee_quat_b[3] << ',' << ee_quat_b[0] << '\n';
+    out.flush();
+  }
+
+  void AppendPoseJson(
+      std::ostringstream& out,
+      const char* name,
+      const std::array<mjtNum, 3>& pos,
+      const std::array<mjtNum, 4>& quat_wxyz)
+  {
+    out << "{\"name\":\"" << name << "\","
+        << "\"p\":[" << pos[0] << ',' << pos[1] << ',' << pos[2] << "],"
+        << "\"q_xyzw\":[" << quat_wxyz[1] << ',' << quat_wxyz[2] << ','
+        << quat_wxyz[3] << ',' << quat_wxyz[0] << "]}";
+  }
+
+  void PublishDebugRvizFrames(const mjModel* model, const mjData* data)
+  {
+    constexpr const char* kBaseFrameName = "go2_base";
+    constexpr const char* kEeFrameName = "piper_ee";
+    constexpr const char* kBaseBodyName = "base_link";
+    constexpr const char* kEeOrientationBodyName = "link6";
+    constexpr const char* kEeFingerBodyNameA = "link7";
+    constexpr const char* kEeFingerBodyNameB = "link8";
+
+    static const mjModel* cached_model = nullptr;
+    static int base_body_id = -1;
+    static int ee_orientation_body_id = -1;
+    static int ee_finger_body_id_a = -1;
+    static int ee_finger_body_id_b = -1;
+    static int udp_fd = -1;
+    static sockaddr_in udp_addr{};
+    static std::string cached_host;
+    static int cached_port = -1;
+    static bool warned_setup = false;
+    static bool warned_missing_body = false;
+    static double last_publish_time_s = -1.0;
+
+    if (!param::config.debug_rviz) {
+      return;
+    }
+    if (!model || !data) {
+      return;
+    }
+
+    const double publish_rate_hz =
+        param::config.debug_rviz_rate > 0.0 ? param::config.debug_rviz_rate : 50.0;
+    const double publish_period_s = 1.0 / publish_rate_hz;
+    if (data->time >= last_publish_time_s &&
+        data->time - last_publish_time_s < publish_period_s) {
+      return;
+    }
+    last_publish_time_s = data->time;
+
+    if (udp_fd < 0 ||
+        cached_host != param::config.debug_rviz_udp_host ||
+        cached_port != param::config.debug_rviz_udp_port) {
+      if (udp_fd >= 0) {
+        close(udp_fd);
+        udp_fd = -1;
+      }
+      cached_host = param::config.debug_rviz_udp_host;
+      cached_port = param::config.debug_rviz_udp_port;
+      udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+      if (udp_fd < 0) {
+        if (!warned_setup) {
+          warned_setup = true;
+          std::cerr << "[DebugRViz] Failed to create UDP socket: " << std::strerror(errno) << std::endl;
+        }
+        return;
+      }
+
+      std::memset(&udp_addr, 0, sizeof(udp_addr));
+      udp_addr.sin_family = AF_INET;
+      udp_addr.sin_port = htons(static_cast<std::uint16_t>(cached_port));
+      if (inet_pton(AF_INET, cached_host.c_str(), &udp_addr.sin_addr) != 1) {
+        if (!warned_setup) {
+          warned_setup = true;
+          std::cerr << "[DebugRViz] debug_rviz_udp_host must be an IPv4 address, got "
+                    << cached_host << std::endl;
+        }
+        close(udp_fd);
+        udp_fd = -1;
+        return;
+      }
+      warned_setup = false;
+      std::cout << "[DebugRViz] Publishing MuJoCo frames to "
+                << cached_host << ':' << cached_port
+                << " at " << publish_rate_hz << " Hz" << std::endl;
+    }
+
+    if (cached_model != model) {
+      cached_model = model;
+      base_body_id = mj_name2id(model, mjOBJ_BODY, kBaseBodyName);
+      ee_orientation_body_id = mj_name2id(model, mjOBJ_BODY, kEeOrientationBodyName);
+      ee_finger_body_id_a = mj_name2id(model, mjOBJ_BODY, kEeFingerBodyNameA);
+      ee_finger_body_id_b = mj_name2id(model, mjOBJ_BODY, kEeFingerBodyNameB);
+      warned_missing_body = false;
+      last_publish_time_s = -publish_period_s;
+    }
+
+    if (base_body_id < 0 || ee_orientation_body_id < 0 ||
+        ee_finger_body_id_a < 0 || ee_finger_body_id_b < 0) {
+      if (!warned_missing_body) {
+        warned_missing_body = true;
+        std::cerr << "[DebugRViz] Missing one of required bodies: "
+                  << kBaseBodyName << ", " << kEeOrientationBodyName << ", "
+                  << kEeFingerBodyNameA << ", " << kEeFingerBodyNameB << std::endl;
+      }
+      return;
+    }
+
+    const mjtNum* base_pos_raw = data->xpos + 3 * base_body_id;
+    const mjtNum* base_quat_raw = data->xquat + 4 * base_body_id;
+    const mjtNum* ee_quat_raw = data->xquat + 4 * ee_orientation_body_id;
+    const mjtNum* ee_pos_a_raw = data->xpos + 3 * ee_finger_body_id_a;
+    const mjtNum* ee_pos_b_raw = data->xpos + 3 * ee_finger_body_id_b;
+
+    const std::array<mjtNum, 3> world_pos = {0.0, 0.0, 0.0};
+    const std::array<mjtNum, 4> world_quat = {1.0, 0.0, 0.0, 0.0};
+    const std::array<mjtNum, 3> base_pos = {base_pos_raw[0], base_pos_raw[1], base_pos_raw[2]};
+    std::array<mjtNum, 4> base_quat = {
+        base_quat_raw[0], base_quat_raw[1], base_quat_raw[2], base_quat_raw[3]};
+    const std::array<mjtNum, 3> ee_pos = {
+        0.5 * (ee_pos_a_raw[0] + ee_pos_b_raw[0]),
+        0.5 * (ee_pos_a_raw[1] + ee_pos_b_raw[1]),
+        0.5 * (ee_pos_a_raw[2] + ee_pos_b_raw[2])};
+    std::array<mjtNum, 4> ee_quat = {
+        ee_quat_raw[0], ee_quat_raw[1], ee_quat_raw[2], ee_quat_raw[3]};
+    NormalizeQuat(base_quat);
+    NormalizeQuat(ee_quat);
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(9)
+        << "{\"sim_time_s\":" << data->time << ",\"frames\":[";
+    AppendPoseJson(out, "world", world_pos, world_quat);
+    out << ',';
+    AppendPoseJson(out, kBaseFrameName, base_pos, base_quat);
+    out << ',';
+    AppendPoseJson(out, kEeFrameName, ee_pos, ee_quat);
+    out << "]}\n";
+
+    const std::string payload = out.str();
+    const ssize_t sent = sendto(
+        udp_fd,
+        payload.data(),
+        payload.size(),
+        0,
+        reinterpret_cast<const sockaddr*>(&udp_addr),
+        sizeof(udp_addr));
+    if (sent < 0) {
+      std::cerr << "[DebugRViz] UDP send failed: " << std::strerror(errno) << std::endl;
+    }
   }
 
   // simulate in background thread (while rendering in main thread)
@@ -715,6 +1225,7 @@ namespace
 
               // run single step, let next iteration deal with timing
               mj_step(m, d);
+              UpdateBlackboardEraserGraspLatch(m, d);
               stepped = true;
             }
 
@@ -756,6 +1267,7 @@ namespace
 
                 // call mj_step
                 mj_step(m, d);
+                UpdateBlackboardEraserGraspLatch(m, d);
                 stepped = true;
 
                 // break if reset
@@ -771,6 +1283,8 @@ namespace
             {
               sim.AddToHistory();
               PublishTaskObjectPose(m, d);
+              PublishMujocoPairDiagnostic(m, d);
+              PublishDebugRvizFrames(m, d);
             }
           }
 
@@ -780,6 +1294,8 @@ namespace
             // run mj_forward, to update rendering and joint sliders
             mj_forward(m, d);
             PublishTaskObjectPose(m, d);
+            PublishMujocoPairDiagnostic(m, d);
+            PublishDebugRvizFrames(m, d);
             sim.speed_changed = true;
           }
         }

@@ -1,0 +1,60 @@
+<mujoco model="go2 piper pick and place task scene">
+  <include file="go2_piper_fake_ee.xml" />
+
+  <statistic center="0.8 0.3 0.30" extent="2.2" />
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.30 0.30 0.30" specular="0.05 0.05 0.05" />
+    <rgba haze="0.15 0.22 0.28 1" />
+    <global azimuth="-125" elevation="-22" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.52 0.70" rgb2="0.02 0.03 0.05"
+             width="512" height="3072" />
+    <texture type="2d" name="pick_ground_tex" builtin="checker" mark="edge"
+             rgb1="0.30 0.34 0.38" rgb2="0.18 0.21 0.24" markrgb="0.75 0.75 0.75"
+             width="300" height="300" />
+    <material name="pick_ground" texture="pick_ground_tex" texuniform="true" texrepeat="8 8"
+              reflectance="0.12" />
+    <material name="bottle_plastic" rgba="0.25 0.68 0.92 0.82" />
+    <material name="bottle_cap" rgba="0.08 0.28 0.72 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+    <light pos="1.5 -2.5 2.2" dir="0.2 0.4 -1" directional="true" diffuse="0.35 0.35 0.35" />
+    <geom name="floor" type="plane" size="0 0 0.05" material="pick_ground"
+          friction="1.0 0.01 0.001" />
+
+    <!-- Keep the stable pick_object publisher name while reusing the drawer
+         task's small water-bottle geometry.  z=0.056 places its base on the floor. -->
+    <body name="pick_object" pos="0.65 0.65 0.056">
+      <freejoint name="pick_object_freejoint" />
+      <geom name="pick_bottle_body" type="cylinder" pos="0 0 0" size="0.024 0.055"
+            mass="0.040" material="bottle_plastic" friction="1.7 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+      <geom name="pick_bottle_base_ring" type="cylinder" pos="0 0 -0.052" size="0.026 0.003"
+            mass="0.004" material="bottle_plastic" friction="2.0 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+      <!-- Non-colliding internal water mass keeps the bottle's centre of mass low. -->
+      <geom name="pick_bottle_water_ballast" type="cylinder" pos="0 0 -0.027"
+            size="0.019 0.023" mass="0.080" rgba="0.08 0.35 0.85 0.16"
+            contype="0" conaffinity="0" />
+      <geom name="pick_bottle_shoulder" type="cylinder" pos="0 0 0.057" size="0.020 0.008"
+            mass="0.006" material="bottle_plastic" friction="1.7 0.02 0.002" />
+      <geom name="pick_bottle_neck" type="cylinder" pos="0 0 0.074" size="0.011 0.010"
+            mass="0.002" material="bottle_plastic" friction="1.7 0.02 0.002" />
+      <geom name="pick_bottle_cap" type="cylinder" pos="0 0 0.089" size="0.013 0.006"
+            mass="0.002" material="bottle_cap" friction="1.7 0.02 0.002" />
+    </body>
+    <body name="place_support" pos="1.45 -0.80 0.375">
+      <geom name="place_support_geom" type="box" size="0.11 0.11 0.375"
+            rgba="0.25 0.32 0.38 1" friction="1.2 0.005 0.0001" />
+    </body>
+    <body name="place_target_marker" pos="1.45 -0.80 0.751">
+      <geom name="place_target_marker_geom" type="cylinder" size="0.08 0.001"
+            rgba="0.10 0.75 0.22 0.65" contype="0" conaffinity="0" />
+    </body>
+  </worldbody>
+</mujoco>

@@ -25,6 +25,13 @@ inline struct SimulationConfig
 
     int enable_elastic_band;
     int band_attached_link = 0;
+    bool record_mocap_pair = false;
+    std::string mocap_pair_csv = "/tmp/mujoco_pair_go2_base_piper_ee.csv";
+    double mocap_pair_rate = 50.0;
+    bool debug_rviz = false;
+    std::string debug_rviz_udp_host = "127.0.0.1";
+    int debug_rviz_udp_port = 16001;
+    double debug_rviz_rate = 50.0;
 
     void load_from_yaml(const std::string &filename)
     {
@@ -63,6 +70,13 @@ inline po::variables_map helper(int argc, char** argv)
         ("network,n", po::value<std::string>(&config.interface), "DDS network interface; -n eth0")
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
         ("scene,s", po::value<std::filesystem::path>(&config.robot_scene), "Robot scene file; -s scene_terrain.xml")
+        ("record_mocap_pair", po::bool_switch(&config.record_mocap_pair), "Record base_link->piper_ee CSV for mocap comparison")
+        ("mocap_pair_csv", po::value<std::string>(&config.mocap_pair_csv), "Output CSV path for --record_mocap_pair")
+        ("mocap_pair_rate", po::value<double>(&config.mocap_pair_rate), "CSV record rate in Hz for --record_mocap_pair")
+        ("debug_rviz", po::bool_switch(&config.debug_rviz), "Publish MuJoCo world/base/EE frames over UDP for RViz")
+        ("debug_rviz_udp_host", po::value<std::string>(&config.debug_rviz_udp_host), "UDP host for --debug_rviz")
+        ("debug_rviz_udp_port", po::value<int>(&config.debug_rviz_udp_port), "UDP port for --debug_rviz")
+        ("debug_rviz_rate", po::value<double>(&config.debug_rviz_rate), "Publish rate in Hz for --debug_rviz")
     ;
 
     po::variables_map vm;

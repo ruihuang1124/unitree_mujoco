@@ -1,0 +1,226 @@
+<mujoco model="go2 piper manipulation task scene">
+  <!-- Legacy combined scene retained for comparison only.  simulate/config.yaml
+       now selects one of the isolated scene_*.xml task files instead. -->
+  <!-- Keep the calibrated fake-EE marker chain used by the current S2S bridge. -->
+  <include file="go2_piper_fake_ee.xml" />
+
+  <statistic center="1.3 0 0.45" extent="4.2" />
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.30 0.30 0.30" specular="0.05 0.05 0.05" />
+    <rgba haze="0.15 0.22 0.28 1" />
+    <global azimuth="-125" elevation="-22" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.52 0.70" rgb2="0.02 0.03 0.05"
+             width="512" height="3072" />
+    <texture type="2d" name="task_ground_tex" builtin="checker" mark="edge"
+             rgb1="0.30 0.34 0.38" rgb2="0.18 0.21 0.24" markrgb="0.75 0.75 0.75"
+             width="300" height="300" />
+    <material name="task_ground" texture="task_ground_tex" texuniform="true" texrepeat="10 10"
+              reflectance="0.12" />
+    <material name="door_wood" rgba="0.48 0.24 0.09 1" />
+    <material name="frame_white" rgba="0.78 0.80 0.82 1" />
+    <material name="handle_metal" rgba="0.82 0.84 0.86 1" />
+    <material name="table_top" rgba="0.52 0.34 0.18 1" />
+    <material name="table_leg" rgba="0.22 0.24 0.26 1" />
+    <material name="board_surface" rgba="0.055 0.15 0.10 1" />
+    <material name="board_frame" rgba="0.65 0.67 0.70 1" />
+    <material name="drawer_wood" rgba="0.58 0.38 0.20 1" />
+    <material name="drawer_inside" rgba="0.34 0.22 0.13 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+    <light pos="1.5 -2.5 2.2" dir="0.2 0.4 -1" directional="true" diffuse="0.35 0.35 0.35" />
+    <geom name="floor" type="plane" size="0 0 0.05" material="task_ground"
+          friction="1.0 0.01 0.001" />
+
+    <!-- Existing key-4 pick/place station. -->
+    <body name="pick_support" pos="0.65 0.70 0.10">
+      <geom name="pick_support_geom" type="box" size="0.07 0.07 0.10"
+            rgba="0.32 0.35 0.40 1" friction="1.2 0.005 0.0001" />
+    </body>
+    <body name="pick_object" pos="0.65 0.65 0.22">
+      <freejoint name="pick_object_freejoint" />
+      <geom name="pick_object_geom" type="box" size="0.015 0.015 0.015" mass="0.04"
+            rgba="0.95 0.12 0.08 1" friction="1.3 0.005 0.0001"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+    </body>
+    <!-- Keep the key-4 destination in the +y task lane and outside the door
+         handle/body sweep and the y=0 doorway traversal corridor. -->
+    <body name="place_support" pos="0.25 1.80 0.375">
+      <geom name="place_support_geom" type="box" size="0.11 0.11 0.375"
+            rgba="0.25 0.32 0.38 1" friction="1.2 0.005 0.0001" />
+    </body>
+    <body name="place_target_marker" pos="0.25 1.80 0.751">
+      <geom name="place_target_marker_geom" type="cylinder" size="0.08 0.001"
+            rgba="0.10 0.75 0.22 0.65" contype="0" conaffinity="0" />
+    </body>
+
+    <!-- Key 8: demonstration-oriented, very-low-resistance pull door.  The
+         lower-y jamb is the hinge; positive motion pulls the handle toward the
+         robot.  The leaf has explicit floor/header clearance to avoid rubbing. -->
+    <body name="door_frame" pos="2.50 0 0">
+      <geom name="door_left_jamb" type="box" pos="0 -0.79 0.72" size="0.065 0.065 0.72"
+            material="frame_white" />
+      <geom name="door_right_jamb" type="box" pos="0 0.79 0.72" size="0.065 0.065 0.72"
+            material="frame_white" />
+      <geom name="door_header" type="box" pos="0 0 1.44" size="0.065 0.855 0.065"
+            material="frame_white" />
+    </body>
+    <!-- Wall wings make traversal through the opened doorway observable. -->
+    <body name="door_wall_left" pos="2.50 -2.05 0.72">
+      <geom type="box" size="0.055 1.20 0.72" rgba="0.68 0.70 0.72 1" />
+    </body>
+    <body name="door_wall_right" pos="2.50 2.05 0.72">
+      <geom type="box" size="0.055 1.20 0.72" rgba="0.68 0.70 0.72 1" />
+    </body>
+    <body name="door_leaf" pos="2.50 -0.72 0">
+      <joint name="door_hinge" type="hinge" axis="0 0 1" range="0 1.50" limited="true"
+             damping="0.020" frictionloss="0.020" armature="0.0005" />
+      <!-- Put the hinge axis on the leaf's -x face rather than through its
+           thickness center.  This prevents the hinge-side corner sweeping into
+           the left jamb.  z = [0.030, 1.370] keeps floor/header clearance. -->
+      <geom name="door_panel" type="box" pos="0.030 0.72 0.70" size="0.030 0.72 0.67"
+            mass="0.35" material="door_wood" friction="0.2 0.005 0.0005"
+            solref="0.015 1" solimp="0.92 0.98 0.002" />
+      <body name="door_handle" pos="-0.078 1.18 0.60">
+        <geom name="door_handle_bar" type="capsule" fromto="0 0 -0.075 0 0 0.075" size="0.012"
+              mass="0.04" material="handle_metal" friction="2.0 0.02 0.002"
+              solref="0.01 1" solimp="0.95 0.99 0.001" />
+        <geom name="door_handle_mount_low" type="capsule"
+              fromto="0 0 -0.055 0.070 0 -0.055" size="0.008"
+              mass="0.01" material="handle_metal" />
+        <geom name="door_handle_mount_high" type="capsule"
+              fromto="0 0 0.055 0.070 0 0.055" size="0.008"
+              mass="0.01" material="handle_metal" />
+      </body>
+    </body>
+    <body name="door_pass_marker" pos="4.15 0.10 0.012">
+      <geom type="box" size="0.35 0.35 0.006" rgba="0.15 0.72 0.24 0.45"
+            contype="0" conaffinity="0" />
+    </body>
+
+    <!-- Key 9: table and a graspable rigid eraser standing in for a cloth. -->
+    <body name="wipe_table" pos="1.62 2.20 0">
+      <geom name="wipe_table_top" type="box" pos="0 0 0.52" size="0.38 0.46 0.04"
+            material="table_top" friction="1.0 0.01 0.001" />
+      <geom type="box" pos="-0.30 -0.38 0.25" size="0.035 0.035 0.25" material="table_leg" />
+      <geom type="box" pos="-0.30 0.38 0.25" size="0.035 0.035 0.25" material="table_leg" />
+      <geom type="box" pos="0.30 -0.38 0.25" size="0.035 0.035 0.25" material="table_leg" />
+      <geom type="box" pos="0.30 0.38 0.25" size="0.035 0.035 0.25" material="table_leg" />
+    </body>
+    <!-- This body's origin is the desired eraser-centre contact pose. -->
+    <body name="table_wipe_frame" pos="1.58 2.20 0.576">
+      <geom type="box" size="0.20 0.32 0.002" rgba="0.10 0.65 0.95 0.22"
+            contype="0" conaffinity="0" />
+    </body>
+    <body name="table_tool_support" pos="0.72 1.30 0.15">
+      <geom type="box" size="0.075 0.075 0.15" rgba="0.34 0.37 0.41 1"
+            friction="1.1 0.01 0.001" />
+    </body>
+    <body name="table_eraser" pos="0.72 1.30 0.324">
+      <freejoint name="table_eraser_freejoint" />
+      <geom name="table_eraser_geom" type="box" size="0.035 0.025 0.012" mass="0.035"
+            rgba="0.10 0.55 0.95 1" friction="1.8 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+    </body>
+
+    <!-- Key 0: vertical blackboard and a second graspable rigid eraser. -->
+    <body name="blackboard" pos="2.02 -2.20 0.63">
+      <geom name="blackboard_surface" type="box" size="0.040 0.76 0.34"
+            material="board_surface" friction="1.0 0.01 0.001" />
+      <geom type="box" pos="0 -0.81 0" size="0.055 0.05 0.40" material="board_frame" />
+      <geom type="box" pos="0 0.81 0" size="0.055 0.05 0.40" material="board_frame" />
+      <geom type="box" pos="0 0 -0.39" size="0.055 0.86 0.05" material="board_frame" />
+      <geom type="box" pos="0 0 0.39" size="0.055 0.86 0.05" material="board_frame" />
+    </body>
+    <!-- Front face is x=1.98; 1.6 cm offset avoids relying on force control. -->
+    <body name="blackboard_wipe_frame" pos="1.964 -2.20 0.63">
+      <geom type="box" size="0.002 0.58 0.25" rgba="0.95 0.65 0.10 0.20"
+            contype="0" conaffinity="0" />
+    </body>
+    <!-- Keep the blackboard tool station in the blackboard lane (y=-2.20),
+         outside the door-opening and doorway traversal corridor around y=0. -->
+    <body name="board_tool_support" pos="0.72 -2.20 0.15">
+      <geom type="box" size="0.075 0.075 0.15" rgba="0.34 0.37 0.41 1"
+            friction="1.1 0.01 0.001" />
+    </body>
+    <body name="board_eraser" pos="0.72 -2.20 0.324">
+      <freejoint name="board_eraser_freejoint" />
+      <geom name="board_eraser_geom" type="box" size="0.035 0.025 0.012" mass="0.035"
+            rgba="0.95 0.48 0.08 1" friction="1.8 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+    </body>
+
+    <!-- Key 5 / RB+D-pad up: ordinary three-level household drawer cabinet.
+         The cabinet front faces +x.  Only the middle drawer is articulated. -->
+    <body name="drawer_cabinet" pos="-1.50 0 0">
+      <!-- Outer carcass: 1.0 m tall, 0.84 m wide and 0.56 m deep. -->
+      <geom name="drawer_cabinet_left" type="box" pos="-0.26 -0.39 0.50"
+            size="0.28 0.03 0.50" material="drawer_wood" />
+      <geom name="drawer_cabinet_right" type="box" pos="-0.26 0.39 0.50"
+            size="0.28 0.03 0.50" material="drawer_wood" />
+      <geom name="drawer_cabinet_back" type="box" pos="-0.54 0 0.50"
+            size="0.025 0.42 0.50" material="drawer_wood" />
+      <geom name="drawer_cabinet_bottom" type="box" pos="-0.26 0 0.02"
+            size="0.28 0.36 0.02" material="drawer_wood" />
+      <geom name="drawer_cabinet_top" type="box" pos="-0.26 0 0.98"
+            size="0.28 0.36 0.02" material="drawer_wood" />
+      <geom name="drawer_shelf_low" type="box" pos="-0.26 0 0.335"
+            size="0.28 0.36 0.015" material="drawer_inside" />
+      <geom name="drawer_shelf_high" type="box" pos="-0.26 0 0.665"
+            size="0.28 0.36 0.015" material="drawer_inside" />
+
+      <!-- Closed lower and upper drawer fronts make the cabinet visibly layered. -->
+      <geom name="drawer_lower_front" type="box" pos="0.015 0 0.18"
+            size="0.025 0.36 0.13" material="drawer_wood" />
+      <geom name="drawer_lower_handle" type="capsule" fromto="0.085 0 0.135 0.085 0 0.225"
+            size="0.012" material="handle_metal" />
+      <geom name="drawer_upper_front" type="box" pos="0.015 0 0.82"
+            size="0.025 0.36 0.13" material="drawer_wood" />
+      <geom name="drawer_upper_handle" type="capsule" fromto="0.085 0 0.775 0.085 0 0.865"
+            size="0.012" material="handle_metal" />
+
+      <body name="drawer_middle" pos="0 0 0.50">
+        <joint name="drawer_slide" type="slide" axis="1 0 0" range="0 0.38" limited="true"
+               damping="0.05" frictionloss="0.01" armature="0.002" />
+        <geom name="drawer_middle_front" type="box" pos="0.015 0 0"
+              size="0.025 0.36 0.13" mass="0.22" material="drawer_wood"
+              friction="0.8 0.01 0.001" />
+        <geom name="drawer_middle_bottom" type="box" pos="-0.25 0 -0.105"
+              size="0.26 0.33 0.015" mass="0.12" material="drawer_inside"
+              friction="1.2 0.01 0.001" />
+        <geom name="drawer_middle_side_left" type="box" pos="-0.25 -0.335 -0.010"
+              size="0.26 0.015 0.10" mass="0.05" material="drawer_inside" />
+        <geom name="drawer_middle_side_right" type="box" pos="-0.25 0.335 -0.010"
+              size="0.26 0.015 0.10" mass="0.05" material="drawer_inside" />
+        <geom name="drawer_middle_back" type="box" pos="-0.490 0 -0.010"
+              size="0.015 0.33 0.10" mass="0.05" material="drawer_inside" />
+        <body name="drawer_handle" pos="0.085 0 0">
+          <geom name="drawer_handle_bar" type="capsule" fromto="0 0 -0.060 0 0 0.060"
+                size="0.012" mass="0.03" material="handle_metal"
+                friction="2.0 0.02 0.002" solref="0.01 1" solimp="0.95 0.99 0.001" />
+          <geom type="capsule" fromto="0 0 -0.040 -0.045 0 -0.040" size="0.008"
+                mass="0.01" material="handle_metal" />
+          <geom type="capsule" fromto="0 0 0.040 -0.045 0 0.040" size="0.008"
+                mass="0.01" material="handle_metal" />
+        </body>
+        <!-- Desired cube-centre pose in the exposed part of the open tray. -->
+        <body name="drawer_drop_frame" pos="-0.10 0 -0.060">
+          <geom type="box" size="0.045 0.045 0.002" rgba="0.12 0.85 0.25 0.30"
+                contype="0" conaffinity="0" />
+        </body>
+      </body>
+    </body>
+
+    <body name="drawer_cube" pos="-0.15 -0.75 0.030">
+      <freejoint name="drawer_cube_freejoint" />
+      <geom name="drawer_cube_geom" type="box" size="0.025 0.025 0.025" mass="0.05"
+            rgba="0.90 0.16 0.12 1" friction="1.6 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+    </body>
+  </worldbody>
+</mujoco>

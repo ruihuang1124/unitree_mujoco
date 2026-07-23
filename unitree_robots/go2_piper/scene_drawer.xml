@@ -1,0 +1,156 @@
+<mujoco model="go2 piper drawer insertion task scene">
+  <include file="go2_piper_fake_ee.xml" />
+
+  <statistic center="0.9 0 0.45" extent="2.4" />
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.30 0.30 0.30" specular="0.05 0.05 0.05" />
+    <rgba haze="0.15 0.22 0.28 1" />
+    <global azimuth="-125" elevation="-22" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.52 0.70" rgb2="0.02 0.03 0.05"
+             width="512" height="3072" />
+    <texture type="2d" name="drawer_ground_tex" builtin="checker" mark="edge"
+             rgb1="0.30 0.34 0.38" rgb2="0.18 0.21 0.24" markrgb="0.75 0.75 0.75"
+             width="300" height="300" />
+    <material name="drawer_ground" texture="drawer_ground_tex" texuniform="true" texrepeat="8 8"
+              reflectance="0.12" />
+    <material name="handle_metal" rgba="0.82 0.84 0.86 1" />
+    <material name="drawer_wood" rgba="0.58 0.38 0.20 1" />
+    <material name="drawer_inside" rgba="0.34 0.22 0.13 1" />
+    <material name="bottle_plastic" rgba="0.25 0.68 0.92 0.82" />
+    <material name="bottle_cap" rgba="0.08 0.28 0.72 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+    <light pos="1.5 -2.5 2.2" dir="0.2 0.4 -1" directional="true" diffuse="0.35 0.35 0.35" />
+    <geom name="floor" type="plane" size="0 0 0.05" material="drawer_ground"
+          friction="1.0 0.01 0.001" />
+
+    <!-- The cabinet is directly in front of the initial robot.  Its local +x
+         front is rotated onto world -x, so positive drawer_slide motion pulls
+         the middle drawer toward the robot. -->
+    <body name="drawer_cabinet" pos="1.35 0 0" quat="0 0 0 1">
+      <!-- Compact 0.78 m x 0.62 m x 0.46 m household drawer cabinet. -->
+      <geom name="drawer_cabinet_left" type="box" pos="-0.22 -0.295 0.39"
+            size="0.23 0.025 0.39" material="drawer_wood" />
+      <geom name="drawer_cabinet_right" type="box" pos="-0.22 0.295 0.39"
+            size="0.23 0.025 0.39" material="drawer_wood" />
+      <geom name="drawer_cabinet_back" type="box" pos="-0.45 0 0.39"
+            size="0.020 0.31 0.39" material="drawer_wood" />
+      <geom name="drawer_cabinet_bottom" type="box" pos="-0.22 0 0.015"
+            size="0.23 0.27 0.015" material="drawer_wood" />
+      <geom name="drawer_cabinet_top" type="box" pos="-0.22 0 0.765"
+            size="0.23 0.27 0.015" material="drawer_wood" />
+      <geom name="drawer_shelf_low" type="box" pos="-0.22 0 0.260"
+            size="0.23 0.27 0.012" material="drawer_inside" />
+      <geom name="drawer_shelf_high" type="box" pos="-0.22 0 0.520"
+            size="0.23 0.27 0.012" material="drawer_inside" />
+
+      <!-- All three levels use the common horizontal bar-handle layout. -->
+      <geom name="drawer_lower_front" type="box" pos="0.015 0 0.140"
+            size="0.022 0.265 0.095" material="drawer_wood" />
+      <geom name="drawer_lower_handle" type="capsule"
+            fromto="0.085 -0.065 0.140 0.085 0.065 0.140"
+            size="0.010" material="handle_metal" />
+      <geom type="capsule" fromto="0.085 -0.050 0.140 0.035 -0.050 0.140"
+            size="0.007" material="handle_metal" />
+      <geom type="capsule" fromto="0.085 0.050 0.140 0.035 0.050 0.140"
+            size="0.007" material="handle_metal" />
+      <geom name="drawer_middle_front" type="box" pos="0.015 0 0.390"
+            size="0.022 0.265 0.095" material="drawer_wood" />
+      <geom name="drawer_middle_handle" type="capsule"
+            fromto="0.085 -0.065 0.390 0.085 0.065 0.390"
+            size="0.010" material="handle_metal" />
+      <geom type="capsule" fromto="0.085 -0.050 0.390 0.035 -0.050 0.390"
+            size="0.007" material="handle_metal" />
+      <geom type="capsule" fromto="0.085 0.050 0.390 0.035 0.050 0.390"
+            size="0.007" material="handle_metal" />
+
+      <!-- The upper level is the task drawer.  The generic handle/drop-frame
+           names are retained because the pose publisher and robot task player
+           use them as their stable interface. -->
+      <body name="drawer_upper" pos="0 0 0.640">
+        <joint name="drawer_slide" type="slide" axis="1 0 0" range="0 0.31" limited="true"
+               damping="0.15" frictionloss="0.60" armature="0.0001" />
+        <geom name="drawer_upper_front" type="box" pos="0.015 0 0"
+              size="0.022 0.265 0.095" mass="0.060" material="drawer_wood"
+              friction="0.8 0.01 0.001" />
+        <geom name="drawer_upper_bottom" type="box" pos="-0.20 0 -0.075"
+              size="0.21 0.245 0.012" mass="0.035" material="drawer_inside"
+              friction="1.2 0.01 0.001" />
+        <geom name="drawer_upper_side_left" type="box" pos="-0.20 -0.250 -0.010"
+              size="0.21 0.012 0.075" mass="0.012" material="drawer_inside" />
+        <geom name="drawer_upper_side_right" type="box" pos="-0.20 0.250 -0.010"
+              size="0.21 0.012 0.075" mass="0.012" material="drawer_inside" />
+        <geom name="drawer_upper_back" type="box" pos="-0.400 0 -0.010"
+              size="0.012 0.245 0.075" mass="0.012" material="drawer_inside" />
+        <body name="drawer_handle" pos="0.085 0 0">
+          <geom name="drawer_handle_bar" type="capsule" fromto="0 -0.065 0 0 0.065 0"
+                size="0.010" mass="0.015" material="handle_metal"
+                friction="4.0 0.04 0.004" solref="0.01 1" solimp="0.97 0.995 0.001" />
+          <geom type="capsule" fromto="0 -0.050 0 -0.050 -0.050 0" size="0.007"
+                mass="0.004" material="handle_metal" />
+          <geom type="capsule" fromto="0 0.050 0 -0.050 0.050 0" size="0.007"
+                mass="0.004" material="handle_metal" />
+        </body>
+        <!-- Desired water-bottle body origin when it stands on the tray. -->
+        <body name="drawer_drop_frame" pos="-0.080 0 -0.007">
+          <geom type="cylinder" size="0.040 0.002" rgba="0.12 0.85 0.25 0.30"
+                contype="0" conaffinity="0" />
+        </body>
+      </body>
+    </body>
+
+    <!-- A compact 10 cm support makes the small bottle reachable without
+         changing its horizontal task location. -->
+    <body name="drawer_bottle_support" pos="0.15 -0.62 0.050">
+      <geom name="drawer_bottle_support_geom" type="box" size="0.075 0.075 0.050"
+            material="drawer_inside" friction="1.2 0.01 0.001" />
+    </body>
+
+    <!-- Rigid small water bottle standing upright on the support.  The body
+         origin is 56 mm above its base, so z=0.156 places it on the 10 cm top. -->
+    <body name="drawer_bottle" pos="0.15 -0.62 0.156">
+      <!-- Small damping removes contact chatter while remaining negligible
+           compared with the gripper forces used to pick up the bottle. -->
+      <joint name="drawer_bottle_freejoint" type="free" damping="0.01" />
+      <!-- Keep the cylindrical grasp surface, but lift its lower collision edge
+           clear of the support so it does not compete with the contact pad. -->
+      <geom name="drawer_bottle_body" type="cylinder" pos="0 0 0.001" size="0.024 0.054"
+            mass="0.040" material="bottle_plastic" friction="1.7 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001" />
+      <!-- A small box produces a stable four-point support manifold.  It is
+           hidden inside the round base and remains collidable after pickup. -->
+      <geom name="drawer_bottle_contact_pad" type="box" pos="0 0 -0.055"
+            size="0.0175 0.0175 0.001" mass="0.001" rgba="0 0 0 0"
+            friction="1.7 0.02 0.002" solref="0.015 1"
+            solimp="0.95 0.99 0.001" />
+      <geom name="drawer_bottle_base_ring" type="cylinder" pos="0 0 -0.052" size="0.026 0.003"
+            mass="0.004" material="bottle_plastic" friction="2.0 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001"
+            contype="0" conaffinity="0" />
+      <!-- Non-colliding internal water mass keeps the bottle's centre of mass low. -->
+      <geom name="drawer_bottle_water_ballast" type="cylinder" pos="0 0 -0.027"
+            size="0.019 0.023" mass="0.080" rgba="0.08 0.35 0.85 0.16"
+            contype="0" conaffinity="0" />
+      <geom name="drawer_bottle_shoulder" type="cylinder" pos="0 0 0.057" size="0.020 0.008"
+            mass="0.006" material="bottle_plastic" friction="1.7 0.02 0.002" />
+      <geom name="drawer_bottle_neck" type="cylinder" pos="0 0 0.074" size="0.011 0.010"
+            mass="0.002" material="bottle_plastic" friction="1.7 0.02 0.002" />
+      <geom name="drawer_bottle_cap" type="cylinder" pos="0 0 0.089" size="0.013 0.006"
+            mass="0.002" material="bottle_cap" friction="1.7 0.02 0.002" />
+    </body>
+  </worldbody>
+
+  <!-- The slide joint supplies the drawer guides.  Excluding cabinet/drawer
+       self-contact prevents tiny geometry penetrations from wedging the tray,
+       while robot-handle and bottle-tray contacts remain enabled. -->
+  <contact>
+    <exclude name="drawer_guide_contact_exclusion"
+             body1="drawer_cabinet" body2="drawer_upper" />
+  </contact>
+</mujoco>

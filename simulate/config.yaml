@@ -1,5 +1,12 @@
 robot: "go2_piper"  # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
-robot_scene: "scene_flat.xml" # Robot scene, /unitree_robots/[robot]/scene.xml
+# Select exactly one isolated manipulation scene before launching:
+#   scene_door.xml        (key 8)
+#   scene_drawer.xml      (key 5)
+#   scene_blackboard.xml  (key 0)
+#   scene_table.xml       (key 9)
+#   scene_pick_place.xml  (key 4)
+#   scene_trolley.xml     (key 6)
+robot_scene: "scene_drawer.xml"
 
 domain_id: 0  # Domain id
 interface: "lo" # Interface
