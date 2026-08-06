@@ -1,5 +1,5 @@
 <mujoco model="go2_piper scene">
-  <include file="go2_piper_new.xml" />
+  <include file="go2_piper_fake_ee.xml" />
 
   <statistic center="0 0 0.1" extent="0.8" />
 

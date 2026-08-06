@@ -1,0 +1,109 @@
+<mujoco model="go2 piper rough stair pick and place">
+  <include file="go2_piper_fake_ee.xml" />
+
+  <statistic center="1.85 0 0.32" extent="2.8" />
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.30 0.30 0.30"
+               specular="0.04 0.04 0.04" />
+    <rgba haze="0.14 0.20 0.27 1" />
+    <global azimuth="-125" elevation="-24" />
+  </visual>
+
+  <!-- Set to 0 after recording to restore fake_ee and HLC debug frames. -->
+  <custom>
+    <numeric name="recording_hide_debug_visuals" data="1" />
+  </custom>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.34 0.50 0.68"
+             rgb2="0.02 0.03 0.05" width="512" height="3072" />
+    <texture type="2d" name="rough_pick_ground_tex" builtin="checker" mark="edge"
+             rgb1="0.24 0.28 0.31" rgb2="0.15 0.18 0.21"
+             markrgb="0.72 0.72 0.72" width="300" height="300" />
+    <material name="rough_pick_ground" texture="rough_pick_ground_tex"
+              texuniform="true" texrepeat="8 8" reflectance="0.08" />
+    <material name="rough_pick_step_a" rgba="0.63 0.43 0.22 1" />
+    <material name="rough_pick_step_b" rgba="0.74 0.52 0.27 1" />
+    <material name="rough_pick_platform" rgba="0.28 0.48 0.58 1" />
+    <material name="rough_pick_bottle" rgba="0.20 0.68 0.94 0.88" />
+    <material name="rough_pick_cap" rgba="0.06 0.24 0.70 1" />
+    <material name="rough_pick_pedestal" rgba="0.36 0.42 0.47 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="1.8 -1.2 3.2" dir="-0.15 0.08 -1"
+           directional="true" diffuse="0.70 0.70 0.70" />
+
+    <geom name="rough_pick_floor" type="plane" size="0 0 0.05"
+          material="rough_pick_ground"
+          friction="1.0 0.005 0.0001" condim="3" />
+
+    <!-- Same 0.30 m tread / 0.06 m rise course as the Key-G probe. -->
+    <geom name="rough_pick_step_01" type="box"
+          pos="1.10 0 0.03" size="0.15 1.00 0.03"
+          material="rough_pick_step_a"
+          friction="1.0 0.005 0.0001" condim="3" />
+    <geom name="rough_pick_step_02" type="box"
+          pos="1.40 0 0.06" size="0.15 1.00 0.06"
+          material="rough_pick_step_b"
+          friction="1.0 0.005 0.0001" condim="3" />
+    <geom name="rough_pick_step_03" type="box"
+          pos="1.70 0 0.09" size="0.15 1.00 0.09"
+          material="rough_pick_step_a"
+          friction="1.0 0.005 0.0001" condim="3" />
+    <geom name="rough_pick_step_04" type="box"
+          pos="2.00 0 0.12" size="0.15 1.00 0.12"
+          material="rough_pick_step_b"
+          friction="1.0 0.005 0.0001" condim="3" />
+    <geom name="rough_pick_step_05" type="box"
+          pos="2.30 0 0.15" size="0.15 1.00 0.15"
+          material="rough_pick_step_a"
+          friction="1.0 0.005 0.0001" condim="3" />
+    <geom name="rough_pick_upper_platform" type="box"
+          pos="3.15 0 0.15" size="0.70 1.00 0.15"
+          material="rough_pick_platform"
+          friction="1.0 0.005 0.0001" condim="3" />
+
+    <!-- Bottle base is exactly on the third stair top (z=0.18 m). -->
+    <body name="pick_object" pos="1.70 0.32 0.232">
+      <freejoint name="pick_object_freejoint" />
+      <geom name="rough_pick_bottle_body" type="cylinder" size="0.022 0.052"
+            mass="0.045" material="rough_pick_bottle"
+            friction="2.0 0.02 0.002" solref="0.01 1"
+            solimp="0.95 0.99 0.001" />
+      <geom name="rough_pick_bottle_base_ring" type="cylinder"
+            pos="0 0 -0.049" size="0.024 0.003"
+            mass="0.006" material="rough_pick_bottle"
+            friction="2.2 0.02 0.002" solref="0.01 1"
+            solimp="0.95 0.99 0.001" />
+      <geom name="rough_pick_bottle_ballast" type="cylinder"
+            pos="0 0 -0.027" size="0.017 0.021"
+            mass="0.075" rgba="0.08 0.35 0.85 0.16"
+            contype="0" conaffinity="0" />
+      <geom name="rough_pick_bottle_shoulder" type="cylinder"
+            pos="0 0 0.054" size="0.019 0.006"
+            mass="0.005" material="rough_pick_bottle"
+            friction="1.8 0.02 0.002" />
+      <geom name="rough_pick_bottle_neck" type="cylinder"
+            pos="0 0 0.066" size="0.010 0.007"
+            mass="0.002" material="rough_pick_bottle"
+            friction="1.8 0.02 0.002" />
+      <geom name="rough_pick_bottle_cap" type="cylinder"
+            pos="0 0 0.076" size="0.012 0.005"
+            mass="0.002" material="rough_pick_cap"
+            friction="1.8 0.02 0.002" />
+    </body>
+
+    <!-- The pedestal sits on the z=0.30 m upper platform and tops at 0.50 m. -->
+    <body name="place_support" pos="3.20 -0.55 0.40">
+      <geom name="rough_pick_place_support" type="box" size="0.13 0.13 0.10"
+            material="rough_pick_pedestal"
+            friction="1.3 0.008 0.0005" condim="3" />
+    </body>
+    <body name="place_target_marker" pos="3.20 -0.55 0.501">
+      <geom name="rough_pick_place_marker" type="cylinder" size="0.085 0.001"
+            rgba="0.10 0.82 0.25 0.72" contype="0" conaffinity="0" />
+    </body>
+  </worldbody>
+</mujoco>

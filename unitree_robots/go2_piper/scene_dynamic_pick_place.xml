@@ -1,0 +1,108 @@
+<mujoco model="go2 piper dynamic pick and place task scene">
+  <include file="go2_piper_fake_ee.xml" />
+
+  <statistic center="1.25 0.20 0.35" extent="2.8" />
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.30 0.30 0.30" specular="0.05 0.05 0.05" />
+    <rgba haze="0.15 0.22 0.28 1" />
+    <global azimuth="-125" elevation="-22" />
+  </visual>
+
+  <!-- simulate/src/main.cc combines an X variable-speed shuttle with smooth
+       Y/Z sinusoids.  The supported bottle centre starts at z=0.35 m, so the
+       configured +/-0.15 m Z amplitude gives the requested [0.20, 0.50] m
+       world-height range. -->
+  <custom>
+    <!-- Video mode: keep fake_ee physics/feedback but hide its marker rig,
+         sites, and all simulator-appended end-effector debug frames. -->
+    <numeric name="recording_hide_debug_visuals" data="1" />
+    <numeric name="moving_platform_speed" data="0.060" />
+    <numeric name="moving_platform_speed_amplitude" data="0.025" />
+    <numeric name="moving_platform_speed_frequency_hz" data="0.12" />
+    <numeric name="moving_platform_y_amplitude_m" data="0.220" />
+    <numeric name="moving_platform_y_frequency_hz" data="0.065" />
+    <numeric name="moving_platform_y_phase_rad" data="0.0" />
+    <numeric name="moving_platform_z_amplitude_m" data="0.150" />
+    <numeric name="moving_platform_z_frequency_hz" data="0.045" />
+    <numeric name="moving_platform_z_phase_rad" data="0.0" />
+  </custom>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.52 0.70" rgb2="0.02 0.03 0.05"
+             width="512" height="3072" />
+    <texture type="2d" name="dynamic_ground_tex" builtin="checker" mark="edge"
+             rgb1="0.30 0.34 0.38" rgb2="0.18 0.21 0.24" markrgb="0.75 0.75 0.75"
+             width="300" height="300" />
+    <material name="dynamic_ground" texture="dynamic_ground_tex" texuniform="true" texrepeat="10 10"
+              reflectance="0.12" />
+    <material name="dynamic_bottle_plastic" rgba="0.25 0.68 0.92 0.82" />
+    <material name="dynamic_bottle_cap" rgba="0.08 0.28 0.72 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+    <light pos="1.5 -2.5 2.2" dir="0.2 0.4 -1" directional="true" diffuse="0.35 0.35 0.35" />
+    <geom name="floor" type="plane" size="0 0 0.05" material="dynamic_ground"
+          friction="1.0 0.01 0.001" />
+
+    <!-- Invisible carrier for the floating-bottle video scene.  A
+         velocity-prescribed slide joint is used instead of an actuator so the
+         robot actuator indices remain unchanged.  Collision bit 2 lets this
+         carrier support the bottle (bits 1+2) without colliding with the robot
+         (bit 1). -->
+    <body name="moving_platform" pos="0.55 0.65 0.248">
+      <joint name="moving_platform_slide" type="slide" axis="1 0 0"
+             limited="true" range="-0.10 2.30" damping="0" armature="0.01" />
+      <joint name="moving_platform_slide_y" type="slide" axis="0 1 0"
+             limited="true" range="-0.220 0.220" damping="0" armature="0.01" />
+      <joint name="moving_platform_slide_z" type="slide" axis="0 0 1"
+             limited="true" range="-0.150 0.150" damping="0" armature="0.01" />
+      <geom name="moving_platform_deck" type="box" size="0.25 0.22 0.055"
+            mass="20.0" rgba="0 0 0 0"
+            friction="1.8 0.01 0.001" solref="0.01 1" solimp="0.95 0.99 0.001"
+            contype="2" conaffinity="2" />
+    </body>
+
+    <!-- Keep the publisher-compatible pick_object name.  This bottle is
+         slightly slimmer and shorter than the static-scene bottle.  Its base
+         centre starts at z=0.35 m on the invisible carrier. -->
+    <body name="pick_object" pos="0.55 0.65 0.350">
+      <freejoint name="pick_object_freejoint" />
+      <geom name="dynamic_pick_bottle_body" type="cylinder" size="0.021 0.047"
+            mass="0.035" material="dynamic_bottle_plastic" friction="2.0 0.02 0.002"
+            solref="0.01 1" solimp="0.95 0.99 0.001"
+            contype="3" conaffinity="3" />
+      <geom name="dynamic_pick_bottle_base_ring" type="cylinder" pos="0 0 -0.044"
+            size="0.023 0.003" mass="0.004" material="dynamic_bottle_plastic"
+            friction="2.2 0.02 0.002" solref="0.01 1" solimp="0.95 0.99 0.001"
+            contype="3" conaffinity="3" />
+      <!-- Non-colliding ballast lowers the centre of mass so the bottle
+           remains upright while the shuttle reverses direction. -->
+      <geom name="dynamic_pick_bottle_ballast" type="cylinder" pos="0 0 -0.024"
+            size="0.017 0.020" mass="0.070" rgba="0.08 0.35 0.85 0.16"
+            contype="0" conaffinity="0" />
+      <geom name="dynamic_pick_bottle_shoulder" type="cylinder" pos="0 0 0.049"
+            size="0.018 0.006" mass="0.005" material="dynamic_bottle_plastic"
+            friction="1.8 0.02 0.002" contype="3" conaffinity="3" />
+      <geom name="dynamic_pick_bottle_neck" type="cylinder" pos="0 0 0.061"
+            size="0.010 0.007" mass="0.002" material="dynamic_bottle_plastic"
+            friction="1.8 0.02 0.002" contype="3" conaffinity="3" />
+      <geom name="dynamic_pick_bottle_cap" type="cylinder" pos="0 0 0.071"
+            size="0.012 0.005" mass="0.002" material="dynamic_bottle_cap"
+            friction="1.8 0.02 0.002" contype="3" conaffinity="3" />
+    </body>
+
+    <!-- The placement pedestal is stationary and intentionally separated
+         from the shuttle lane. -->
+    <body name="place_support" pos="1.45 -0.80 0.300">
+      <geom name="place_support_geom" type="box" size="0.11 0.11 0.300"
+            rgba="0.25 0.32 0.38 1" friction="1.2 0.005 0.0001"
+            contype="2" conaffinity="2" />
+    </body>
+    <body name="place_target_marker" pos="1.45 -0.80 0.601">
+      <geom name="place_target_marker_geom" type="cylinder" size="0.075 0.001"
+            rgba="0.10 0.75 0.22 0.65" contype="0" conaffinity="0" />
+    </body>
+  </worldbody>
+</mujoco>

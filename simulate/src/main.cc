@@ -601,6 +601,8 @@ namespace
     if (pick_body_id >= 0) {
       const mjtNum* pos = data->xpos + 3 * pick_body_id;
       const mjtNum* quat = data->xquat + 4 * pick_body_id;
+      mjtNum velocity[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+      mj_objectVelocity(model, data, mjOBJ_BODY, pick_body_id, velocity, 0);
       std::ofstream out(kPickTempFile, std::ios::trunc);
       if (out.is_open()) {
         out << std::fixed << std::setprecision(7);
@@ -608,6 +610,8 @@ namespace
         out << "sim_time_s: " << data->time << "\n";
         out << "position_w: [" << pos[0] << ", " << pos[1] << ", " << pos[2] << "]\n";
         out << "quaternion_wxyz: [" << quat[0] << ", " << quat[1] << ", " << quat[2] << ", " << quat[3] << "]\n";
+        out << "linear_velocity_w: [" << velocity[3] << ", " << velocity[4] << ", "
+            << velocity[5] << "]\n";
         out.close();
         (void)std::rename(kPickTempFile, kPickPoseFile);
       }
@@ -641,6 +645,178 @@ namespace
       out.close();
       (void)std::rename(kSceneTempFile, kScenePoseFile);
     }
+  }
+
+  // Drive the dedicated dynamic-pick carrier in 3D without adding actuators
+  // (and therefore without changing the robot actuator indexing expected by
+  // UnitreeSdk2Bridge).  X retains the variable-speed shuttle motion while Y
+  // and Z follow independent smooth sinusoids.  Different frequencies produce
+  // a video-friendly spatial path without requiring a future trajectory model
+  // in the robot-side visual servo.
+  void UpdateMovingPickPlatform(const mjModel* model, mjData* data)
+  {
+    constexpr const char* kJointNameX = "moving_platform_slide";
+    constexpr const char* kJointNameY = "moving_platform_slide_y";
+    constexpr const char* kJointNameZ = "moving_platform_slide_z";
+    constexpr const char* kSpeedNumericName = "moving_platform_speed";
+    constexpr const char* kSpeedAmplitudeNumericName = "moving_platform_speed_amplitude";
+    constexpr const char* kSpeedFrequencyNumericName = "moving_platform_speed_frequency_hz";
+    constexpr const char* kYAmplitudeNumericName = "moving_platform_y_amplitude_m";
+    constexpr const char* kYFrequencyNumericName = "moving_platform_y_frequency_hz";
+    constexpr const char* kYPhaseNumericName = "moving_platform_y_phase_rad";
+    constexpr const char* kZAmplitudeNumericName = "moving_platform_z_amplitude_m";
+    constexpr const char* kZFrequencyNumericName = "moving_platform_z_frequency_hz";
+    constexpr const char* kZPhaseNumericName = "moving_platform_z_phase_rad";
+    constexpr mjtNum kFallbackSpeedMps = 0.06;
+    constexpr mjtNum kLimitMarginM = 1.0e-4;
+
+    static const mjModel* cached_model = nullptr;
+    static std::array<int, 3> joint_ids{-1, -1, -1};
+    static std::array<int, 3> qpos_addresses{-1, -1, -1};
+    static std::array<int, 3> dof_addresses{-1, -1, -1};
+    static mjtNum speed_mps = kFallbackSpeedMps;
+    static mjtNum speed_amplitude_mps = 0.0;
+    static mjtNum speed_frequency_hz = 0.0;
+    static mjtNum y_amplitude_m = 0.0;
+    static mjtNum y_frequency_hz = 0.0;
+    static mjtNum y_phase_rad = 0.0;
+    static mjtNum z_amplitude_m = 0.0;
+    static mjtNum z_frequency_hz = 0.0;
+    static mjtNum z_phase_rad = 0.0;
+    static mjtNum x_direction = 1.0;
+    static mjtNum last_sim_time_s = -1.0;
+
+    if (!model || !data) {
+      return;
+    }
+    const bool data_reset =
+        last_sim_time_s >= 0.0 && data->time + mjMINVAL < last_sim_time_s;
+    if (cached_model != model || data_reset) {
+      cached_model = model;
+      joint_ids = {
+          mj_name2id(model, mjOBJ_JOINT, kJointNameX),
+          mj_name2id(model, mjOBJ_JOINT, kJointNameY),
+          mj_name2id(model, mjOBJ_JOINT, kJointNameZ)};
+      qpos_addresses = {-1, -1, -1};
+      dof_addresses = {-1, -1, -1};
+      speed_mps = kFallbackSpeedMps;
+      speed_amplitude_mps = 0.0;
+      speed_frequency_hz = 0.0;
+      y_amplitude_m = 0.0;
+      y_frequency_hz = 0.0;
+      y_phase_rad = 0.0;
+      z_amplitude_m = 0.0;
+      z_frequency_hz = 0.0;
+      z_phase_rad = 0.0;
+      x_direction = 1.0;
+
+      const bool joints_valid = std::all_of(
+          joint_ids.begin(),
+          joint_ids.end(),
+          [model](int id) {
+            return id >= 0 && model->jnt_type[id] == mjJNT_SLIDE;
+          });
+      if (joints_valid) {
+        for (size_t axis = 0; axis < joint_ids.size(); ++axis) {
+          qpos_addresses[axis] = model->jnt_qposadr[joint_ids[axis]];
+          dof_addresses[axis] = model->jnt_dofadr[joint_ids[axis]];
+        }
+        const auto numericValue = [model](const char* name, mjtNum fallback) {
+          const int numeric_id = mj_name2id(model, mjOBJ_NUMERIC, name);
+          if (numeric_id < 0 || model->numeric_size[numeric_id] < 1) {
+            return fallback;
+          }
+          return model->numeric_data[model->numeric_adr[numeric_id]];
+        };
+        speed_mps = std::abs(numericValue(kSpeedNumericName, kFallbackSpeedMps));
+        speed_amplitude_mps =
+            std::abs(numericValue(kSpeedAmplitudeNumericName, 0.0));
+        speed_frequency_hz =
+            std::abs(numericValue(kSpeedFrequencyNumericName, 0.0));
+        y_amplitude_m = std::abs(numericValue(kYAmplitudeNumericName, 0.0));
+        y_frequency_hz = std::abs(numericValue(kYFrequencyNumericName, 0.0));
+        y_phase_rad = numericValue(kYPhaseNumericName, 0.0);
+        z_amplitude_m = std::abs(numericValue(kZAmplitudeNumericName, 0.0));
+        z_frequency_hz = std::abs(numericValue(kZFrequencyNumericName, 0.0));
+        z_phase_rad = numericValue(kZPhaseNumericName, 0.0);
+        if (speed_mps < mjMINVAL) {
+          speed_mps = kFallbackSpeedMps;
+        }
+        // Keep the shuttle moving in its current direction even at the
+        // sinusoid's minimum.
+        speed_amplitude_mps =
+            std::min(speed_amplitude_mps, std::max(speed_mps - 0.005, 0.0));
+        y_amplitude_m = std::min(
+            y_amplitude_m,
+            std::abs(model->jnt_range[2 * joint_ids[1] + 1]));
+        z_amplitude_m = std::min(
+            z_amplitude_m,
+            std::abs(model->jnt_range[2 * joint_ids[2] + 1]));
+        std::cout << "[DynamicPickPlace] Driving 3D invisible carrier: X speed="
+                  << speed_mps << " +/- " << speed_amplitude_mps
+                  << " m/s; Y amplitude/frequency=" << y_amplitude_m
+                  << " m/" << y_frequency_hz
+                  << " Hz; Z amplitude/frequency=" << z_amplitude_m
+                  << " m/" << z_frequency_hz << " Hz" << std::endl;
+      }
+    }
+    last_sim_time_s = data->time;
+
+    const bool addresses_valid =
+        std::all_of(
+            qpos_addresses.begin(),
+            qpos_addresses.end(),
+            [model](int address) { return address >= 0 && address < model->nq; }) &&
+        std::all_of(
+            dof_addresses.begin(),
+            dof_addresses.end(),
+            [model](int address) { return address >= 0 && address < model->nv; });
+    if (!addresses_valid) {
+      return;
+    }
+
+    const mjtNum x_lower = model->jnt_range[2 * joint_ids[0]];
+    const mjtNum x_upper = model->jnt_range[2 * joint_ids[0] + 1];
+    if (data->qpos[qpos_addresses[0]] <= x_lower + kLimitMarginM) {
+      x_direction = 1.0;
+    } else if (data->qpos[qpos_addresses[0]] >= x_upper - kLimitMarginM) {
+      x_direction = -1.0;
+    }
+    const mjtNum x_speed_profile =
+        speed_mps +
+        speed_amplitude_mps *
+            std::sin(2.0 * mjPI * speed_frequency_hz * data->time);
+    data->qvel[dof_addresses[0]] = x_direction * x_speed_profile;
+
+    const auto setSinusoidalAxis = [model, data](
+                                       int joint_id,
+                                       int qpos_address,
+                                       int dof_address,
+                                       mjtNum amplitude_m,
+                                       mjtNum frequency_hz,
+                                       mjtNum phase_rad) {
+      const mjtNum omega = 2.0 * mjPI * frequency_hz;
+      const mjtNum phase = omega * data->time + phase_rad;
+      const mjtNum lower = model->jnt_range[2 * joint_id];
+      const mjtNum upper = model->jnt_range[2 * joint_id + 1];
+      data->qpos[qpos_address] =
+          std::clamp(amplitude_m * std::sin(phase), lower, upper);
+      data->qvel[dof_address] = amplitude_m * omega * std::cos(phase);
+    };
+    setSinusoidalAxis(
+        joint_ids[1],
+        qpos_addresses[1],
+        dof_addresses[1],
+        y_amplitude_m,
+        y_frequency_hz,
+        y_phase_rad);
+    setSinusoidalAxis(
+        joint_ids[2],
+        qpos_addresses[2],
+        dof_addresses[2],
+        z_amplitude_m,
+        z_frequency_hz,
+        z_phase_rad);
   }
 
   std::array<mjtNum, 4> QuatConjugate(const std::array<mjtNum, 4>& quat)
@@ -1224,6 +1400,7 @@ namespace
               sim.speed_changed = false;
 
               // run single step, let next iteration deal with timing
+              UpdateMovingPickPlatform(m, d);
               mj_step(m, d);
               UpdateBlackboardEraserGraspLatch(m, d);
               stepped = true;
@@ -1266,6 +1443,7 @@ namespace
                 }
 
                 // call mj_step
+                UpdateMovingPickPlatform(m, d);
                 mj_step(m, d);
                 UpdateBlackboardEraserGraspLatch(m, d);
                 stepped = true;
@@ -1307,6 +1485,36 @@ namespace
 extern "C" void UnitreeMujocoDebugAppendGeoms(const mjModel* model, const mjData* data, mjvScene* scene)
 {
   if (!model || !data || !scene) {
+    return;
+  }
+
+  // Scene-local clean-video mode.  Hiding the rendered mjvGeoms instead of
+  // deleting fake_ee from MJCF keeps its inertial contribution and the body
+  // pose used by the controller/OptiTrack diagnostics unchanged.
+  const int hide_debug_numeric_id =
+      mj_name2id(model, mjOBJ_NUMERIC, "recording_hide_debug_visuals");
+  const bool hide_debug_visuals =
+      hide_debug_numeric_id >= 0 &&
+      model->numeric_size[hide_debug_numeric_id] >= 1 &&
+      model->numeric_data[model->numeric_adr[hide_debug_numeric_id]] > 0.5;
+  if (hide_debug_visuals) {
+    const int fake_ee_body_id = mj_name2id(model, mjOBJ_BODY, "fake_ee");
+    if (fake_ee_body_id >= 0) {
+      for (int i = 0; i < scene->ngeom; ++i) {
+        mjvGeom& rendered_geom = scene->geoms[i];
+        const int object_id = rendered_geom.objid;
+        const bool belongs_to_fake_ee =
+            (rendered_geom.objtype == mjOBJ_GEOM &&
+             object_id >= 0 && object_id < model->ngeom &&
+             model->geom_bodyid[object_id] == fake_ee_body_id) ||
+            (rendered_geom.objtype == mjOBJ_SITE &&
+             object_id >= 0 && object_id < model->nsite &&
+             model->site_bodyid[object_id] == fake_ee_body_id);
+        if (belongs_to_fake_ee) {
+          rendered_geom.rgba[3] = 0.0f;
+        }
+      }
+    }
     return;
   }
 
