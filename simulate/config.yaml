@@ -9,6 +9,14 @@ robot: "go2_piper"  # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
 #   scene_pick_place.xml
 #   scene_trolley.xml
 robot_scene: "scene_high_level_flat_s2s.xml"
+# Start and reset from a valid standing pose. An empty value uses MuJoCo qpos0.
+reset_keyframe: "home"
+# Keep that pose until robot_main sends the first position-controlled command.
+# This mirrors a powered robot at startup and prevents Passive from collapsing
+# into self-collision before FixStand is selected.
+hold_reset_keyframe_until_control: true
+startup_hold_kp: 80.0
+startup_hold_kd: 4.0
 
 domain_id: 0  # Domain id
 interface: "lo" # Interface

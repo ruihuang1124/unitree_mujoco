@@ -1,5 +1,5 @@
 <mujoco model="go2_piper training rough approximation">
-  <include file="go2_piper_new.xml" />
+  <include file="go2_piper_fake_ee.xml" />
 
   <!--
     Deterministic sim-to-sim course approximating the Isaac Lab rough task:

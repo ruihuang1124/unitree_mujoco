@@ -12,6 +12,10 @@ inline struct SimulationConfig
 {
     std::string robot;
     std::filesystem::path robot_scene;
+    std::string reset_keyframe;
+    bool hold_reset_keyframe_until_control = false;
+    double startup_hold_kp = 80.0;
+    double startup_hold_kd = 4.0;
 
     int domain_id;
     std::string interface;
@@ -40,6 +44,23 @@ inline struct SimulationConfig
         {
             robot = cfg["robot"].as<std::string>();
             robot_scene = cfg["robot_scene"].as<std::string>();
+            if (cfg["reset_keyframe"])
+            {
+                reset_keyframe = cfg["reset_keyframe"].as<std::string>();
+            }
+            if (cfg["hold_reset_keyframe_until_control"])
+            {
+                hold_reset_keyframe_until_control =
+                    cfg["hold_reset_keyframe_until_control"].as<bool>();
+            }
+            if (cfg["startup_hold_kp"])
+            {
+                startup_hold_kp = cfg["startup_hold_kp"].as<double>();
+            }
+            if (cfg["startup_hold_kd"])
+            {
+                startup_hold_kd = cfg["startup_hold_kd"].as<double>();
+            }
             domain_id = cfg["domain_id"].as<int>();
             interface = cfg["interface"].as<std::string>();
             use_joystick = cfg["use_joystick"].as<int>();
@@ -70,6 +91,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("network,n", po::value<std::string>(&config.interface), "DDS network interface; -n eth0")
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
         ("scene,s", po::value<std::filesystem::path>(&config.robot_scene), "Robot scene file; -s scene_terrain.xml")
+        ("keyframe,k", po::value<std::string>(&config.reset_keyframe), "Keyframe used at startup and reset; -k home")
         ("record_mocap_pair", po::bool_switch(&config.record_mocap_pair), "Record base_link->piper_ee CSV for mocap comparison")
         ("mocap_pair_csv", po::value<std::string>(&config.mocap_pair_csv), "Output CSV path for --record_mocap_pair")
         ("mocap_pair_rate", po::value<double>(&config.mocap_pair_rate), "CSV record rate in Hz for --record_mocap_pair")

@@ -9,7 +9,9 @@
 #include <unitree/idl/hg/BmsState_.hpp>
 #include <unitree/idl/hg/IMUState_.hpp>
 
+#include <algorithm>
 #include <iostream>
+#include <vector>
 
 #include "param.h"
 #include "physics_joystick.h"
@@ -182,6 +184,7 @@ public:
         highstate = std::make_unique<HighState_t>();
         wireless_controller = std::make_unique<WirelessController_t>();
         wireless_controller->joystick = joystick;
+        initializeStartupHold();
     }
 
     void start()
@@ -197,11 +200,47 @@ public:
         // lowcmd
         {
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+            if (mj_data_->time + 1.0e-9 < last_sim_time_) {
+                startup_hold_active_ = startup_hold_enabled_;
+                startup_hold_release_logged_ = false;
+            }
+            last_sim_time_ = mj_data_->time;
+
+            bool position_command_received = false;
+            // robot_main always drives the twelve legs in FixStand.  Limit
+            // release detection to those channels: the two simulated finger
+            // channels are outside its 18-DoF FSM and can contain SDK default
+            // values that must not release the hold while still in Passive.
+            const int controlled_leg_count = std::min(num_motor_, 12);
+            for(int i(0); i<controlled_leg_count; i++) {
+                const auto & motor = lowcmd->msg_.motor_cmd()[i];
+                if (motor.kp() > 0.1f) {
+                    position_command_received = true;
+                    break;
+                }
+            }
+            if (startup_hold_active_ && position_command_received) {
+                startup_hold_active_ = false;
+                if (!startup_hold_release_logged_) {
+                    std::cout << "[StartupHold] Position command received; handing control to robot_main."
+                              << std::endl;
+                    startup_hold_release_logged_ = true;
+                }
+            }
+
             for(int i(0); i<num_motor_; i++) {
-                auto & m = lowcmd->msg_.motor_cmd()[i];
-                mj_data_->ctrl[i] = m.tau() +
-                                    m.kp() * (m.q() - mj_data_->sensordata[i]) +
-                                    m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+                if (startup_hold_active_ && startup_hold_valid_[i]) {
+                    mj_data_->ctrl[i] =
+                        param::config.startup_hold_kp *
+                            (startup_hold_q_[i] - mj_data_->sensordata[i]) -
+                        param::config.startup_hold_kd *
+                            mj_data_->sensordata[i + num_motor_];
+                } else {
+                    auto & motor = lowcmd->msg_.motor_cmd()[i];
+                    mj_data_->ctrl[i] = motor.tau() +
+                                        motor.kp() * (motor.q() - mj_data_->sensordata[i]) +
+                                        motor.kd() * (motor.dq() - mj_data_->sensordata[i + num_motor_]);
+                }
             }
         }
 
@@ -318,7 +357,57 @@ public:
     std::unique_ptr<LowState_t> lowstate;
     
 private:
+    void initializeStartupHold()
+    {
+        startup_hold_q_.assign(num_motor_, 0.0);
+        startup_hold_valid_.assign(num_motor_, false);
+        startup_hold_enabled_ =
+            param::config.hold_reset_keyframe_until_control &&
+            !param::config.reset_keyframe.empty();
+        startup_hold_active_ = startup_hold_enabled_;
+        if (!startup_hold_enabled_) {
+            return;
+        }
+
+        const int keyframe_id = mj_name2id(
+            mj_model_, mjOBJ_KEY, param::config.reset_keyframe.c_str());
+        if (keyframe_id < 0) {
+            startup_hold_enabled_ = false;
+            startup_hold_active_ = false;
+            std::cerr << "[StartupHold] Keyframe '" << param::config.reset_keyframe
+                      << "' is unavailable; startup hold disabled." << std::endl;
+            return;
+        }
+
+        for (int actuator = 0; actuator < num_motor_; ++actuator) {
+            if (mj_model_->actuator_trntype[actuator] != mjTRN_JOINT) {
+                continue;
+            }
+            const int joint = mj_model_->actuator_trnid[2 * actuator];
+            if (joint < 0 || joint >= mj_model_->njnt) {
+                continue;
+            }
+            const int qpos_address = mj_model_->jnt_qposadr[joint];
+            if (qpos_address < 0 || qpos_address >= mj_model_->nq) {
+                continue;
+            }
+            startup_hold_q_[actuator] =
+                mj_model_->key_qpos[keyframe_id * mj_model_->nq + qpos_address];
+            startup_hold_valid_[actuator] = true;
+        }
+        std::cout << "[StartupHold] Holding keyframe '" << param::config.reset_keyframe
+                  << "' until robot_main sends a position command (kp="
+                  << param::config.startup_hold_kp << ", kd="
+                  << param::config.startup_hold_kd << ")." << std::endl;
+    }
+
     unitree::common::RecurrentThreadPtr thread_;
+    std::vector<mjtNum> startup_hold_q_;
+    std::vector<bool> startup_hold_valid_;
+    bool startup_hold_enabled_ = false;
+    bool startup_hold_active_ = false;
+    bool startup_hold_release_logged_ = false;
+    double last_sim_time_ = 0.0;
 };
 
 using Go2Bridge = RobotBridge<unitree::robot::go2::subscription::LowCmd, unitree::robot::go2::publisher::LowState>;

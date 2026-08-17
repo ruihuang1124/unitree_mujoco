@@ -111,6 +111,90 @@ namespace
   mjModel *m = nullptr;
   mjData *d = nullptr;
 
+  // A MuJoCo keyframe is not applied by mj_makeData() or mj_resetData().
+  // In particular, the Go2 knee qpos=0 default is outside its negative joint
+  // range, so starting from qpos0 can make the robot collapse before the
+  // controller connects. Keep startup, model reload and Backspace consistent.
+  void ResetSimulationData(const mjModel *model, mjData *data)
+  {
+    if (!model || !data)
+    {
+      return;
+    }
+
+    const std::string &keyframe_name = param::config.reset_keyframe;
+    if (!keyframe_name.empty())
+    {
+      const int keyframe_id = mj_name2id(model, mjOBJ_KEY, keyframe_name.c_str());
+      if (keyframe_id >= 0)
+      {
+        mj_resetDataKeyframe(model, data, keyframe_id);
+
+        // A keyframe is expanded to the model's complete qpos vector.  When a
+        // scene adds a free object after the included robot model, omitted
+        // trailing keyframe values become zero and move that object to the
+        // world origin.  Rough manipulation scenes opt in to restoring those
+        // non-robot free joints from their XML-defined qpos0 while retaining
+        // the robot's keyframed base and joint pose.
+        int restored_scene_freejoints = 0;
+        const int restore_numeric_id =
+            mj_name2id(model, mjOBJ_NUMERIC,
+                       "reset_restore_nonrobot_freejoints");
+        const bool restore_scene_freejoints =
+            restore_numeric_id >= 0 &&
+            model->numeric_data[model->numeric_adr[restore_numeric_id]] > 0.5;
+        if (restore_scene_freejoints)
+        {
+          const int robot_base_body_id =
+              mj_name2id(model, mjOBJ_BODY, "base_link");
+          if (robot_base_body_id < 0)
+          {
+            std::cerr << "[Reset] Scene requested non-robot freejoint "
+                         "restoration, but body 'base_link' was not found; "
+                         "leaving keyframe qpos unchanged."
+                      << std::endl;
+          }
+          else
+          {
+            for (int joint_id = 0; joint_id < model->njnt; ++joint_id)
+            {
+              if (model->jnt_type[joint_id] != mjJNT_FREE ||
+                  model->jnt_bodyid[joint_id] == robot_base_body_id)
+              {
+                continue;
+              }
+
+              const int qpos_adr = model->jnt_qposadr[joint_id];
+              for (int offset = 0; offset < 7; ++offset)
+              {
+                data->qpos[qpos_adr + offset] =
+                    model->qpos0[qpos_adr + offset];
+              }
+              ++restored_scene_freejoints;
+            }
+          }
+        }
+
+        mj_forward(model, data);
+        std::cout << "[Reset] Applied keyframe '" << keyframe_name
+                  << "' (id=" << keyframe_id << ")";
+        if (restore_scene_freejoints)
+        {
+          std::cout << "; restored " << restored_scene_freejoints
+                    << " non-robot freejoint(s) from qpos0";
+        }
+        std::cout << std::endl;
+        return;
+      }
+
+      std::cerr << "[Reset] Keyframe '" << keyframe_name
+                << "' is not defined by this model; using qpos0." << std::endl;
+    }
+
+    mj_resetData(model, data);
+    mj_forward(model, data);
+  }
+
   // control noise variables
   mjtNum *ctrlnoise = nullptr;
 
@@ -1293,7 +1377,7 @@ namespace
 
           m = mnew;
           d = dnew;
-          mj_forward(m, d);
+          ResetSimulationData(m, d);
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -1323,7 +1407,7 @@ namespace
 
           m = mnew;
           d = dnew;
-          mj_forward(m, d);
+          ResetSimulationData(m, d);
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -1605,7 +1689,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     if (d)
     {
       sim->Load(m, d, filename);
-      mj_forward(m, d);
+      ResetSimulationData(m, d);
 
       // allocate ctrlnoise
       free(ctrlnoise);
@@ -1638,7 +1722,9 @@ void *UnitreeSdk2BridgeThread(void *arg)
       std::cout << "Mujoco data is prepared" << std::endl;
       break;
     }
-    usleep(500000);
+    // Start the bridge promptly so startup pose holding is active before the
+    // robot can fall into a self-colliding configuration.
+    usleep(1000);
   }
 
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
@@ -1689,8 +1775,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
       }
     }
     if(key==GLFW_KEY_BACKSPACE) {
-      mj_resetData(m, d);
-      mj_forward(m, d);
+      ResetSimulationData(m, d);
     }
   }
 }

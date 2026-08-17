@@ -456,9 +456,10 @@
   </sensor>
 
   <keyframe>
-    <!-- Training InitialStateCfg, in MuJoCo body traversal order:
-         FL, FR, RL, RR, arm joint1..8. -->
-    <key name="home" qpos="0 0 0.4 1 0 0 0
+    <!-- Joint angles follow Training InitialStateCfg in MuJoCo body traversal
+         order (FL, FR, RL, RR, arm joint1..8).  The 0.32 m root height is the
+         near-ground simulator boot pose; training spawns at 0.4 m and settles. -->
+    <key name="home" qpos="0 0 0.32 1 0 0 0
       0.1 0.8 -1.5 -0.1 0.8 -1.5 0.1 1.0 -1.5 -0.1 1.0 -1.5
       0 1.43 -0.57 0 -0.75 0 0.0175 -0.0175"/>
   </keyframe>
