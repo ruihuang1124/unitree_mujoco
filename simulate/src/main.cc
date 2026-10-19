@@ -42,6 +42,7 @@
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
+#include "door_latch.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 #define NUM_MOTOR_IDL_GO 20
@@ -625,8 +626,9 @@ namespace
     constexpr const char* kPickTempFile = "/tmp/mujoco_pick_object_pose.yaml.tmp";
     constexpr const char* kScenePoseFile = "/tmp/mujoco_scene_task_poses.yaml";
     constexpr const char* kSceneTempFile = "/tmp/mujoco_scene_task_poses.yaml.tmp";
-    constexpr std::array<const char*, 10> kSceneBodyNames = {
+    constexpr std::array<const char*, 11> kSceneBodyNames = {
         "door_handle",
+        "door_lever",
         "table_eraser",
         "board_eraser",
         "table_wipe_frame",
@@ -639,7 +641,7 @@ namespace
     // A body may expose the coordinate of the articulated joint that moves it.
     // nullptr means that only the world pose is published for that body.
     constexpr std::array<const char*, kSceneBodyNames.size()> kSceneJointNames = {
-        "door_hinge", nullptr, nullptr, nullptr, nullptr, "drawer_slide", nullptr, nullptr,
+        "door_hinge", "door_lever_hinge", nullptr, nullptr, nullptr, nullptr, "drawer_slide", nullptr, nullptr,
         nullptr, nullptr};
 
     static const mjModel* cached_model = nullptr;
@@ -1485,7 +1487,9 @@ namespace
 
               // run single step, let next iteration deal with timing
               UpdateMovingPickPlatform(m, d);
+              UpdateDoorLatch(m, d);
               mj_step(m, d);
+              reference::capture(m, d);
               UpdateBlackboardEraserGraspLatch(m, d);
               stepped = true;
             }
@@ -1528,7 +1532,9 @@ namespace
 
                 // call mj_step
                 UpdateMovingPickPlatform(m, d);
+                UpdateDoorLatch(m, d);
                 mj_step(m, d);
+                reference::capture(m, d);
                 UpdateBlackboardEraserGraspLatch(m, d);
                 stepped = true;
 
@@ -1775,6 +1781,8 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
       }
     }
     if(key==GLFW_KEY_BACKSPACE) {
+      std::unique_lock<std::recursive_mutex> lock;
+      if(param::lmd_sim_mutex) lock=std::unique_lock<std::recursive_mutex>(*param::lmd_sim_mutex);
       ResetSimulationData(m, d);
     }
   }
@@ -1825,6 +1833,7 @@ int main(int argc, char **argv)
     std::make_unique<mj::GlfwAdapter>(),
     &cam, &opt, &pert, /* is_passive = */ false);
 
+  if(!reference::directory().empty()) param::lmd_sim_mutex=&sim->mtx;
   std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
   std::thread debug_vis_thread(HighLevelDebugUdpThread);
   debug_vis_thread.detach();

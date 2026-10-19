@@ -4,9 +4,11 @@
 #include <boost/program_options.hpp>
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
+#include <mutex>
 
 namespace param
 {
+inline std::recursive_mutex* lmd_sim_mutex = nullptr;
 
 inline struct SimulationConfig
 {
@@ -87,6 +89,7 @@ inline po::variables_map helper(int argc, char** argv)
     po::options_description desc("Unitree Mujoco");
     desc.add_options()
         ("help,h", "Show help message")
+        ("config", po::value<std::string>(), "Load an explicit simulation config YAML")
         ("domain_id,i", po::value<int>(&config.domain_id), "DDS domain ID; -i 0")
         ("network,n", po::value<std::string>(&config.interface), "DDS network interface; -n eth0")
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
@@ -103,6 +106,7 @@ inline po::variables_map helper(int argc, char** argv)
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
+    if(vm.count("config")) config.load_from_yaml(vm["config"].as<std::string>());
     po::notify(vm);
     
     if (vm.count("help"))

@@ -42,5 +42,6 @@ link_libraries(
 )
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+add_executable(test_suite_scene_physics src/test_suite_scene_physics.cc)
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

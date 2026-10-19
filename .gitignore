@@ -1,4 +1,5 @@
 **/build/
+simulate/build_suite/
 **/.vscode/
 **/__pycache__/
 **/log/

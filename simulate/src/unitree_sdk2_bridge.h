@@ -1,3 +1,4 @@
+#include "reference_recorder.h"
 #pragma once
 
 #include <mujoco/mujoco.h>
@@ -195,12 +196,17 @@ public:
 
     virtual void run()
     {
+        std::unique_lock<std::recursive_mutex> simulation_lock;
+        if(param::lmd_sim_mutex) simulation_lock=std::unique_lock<std::recursive_mutex>(*param::lmd_sim_mutex);
         if(!mj_data_) return;
         if(lowstate->joystick) { lowstate->joystick->update(); }
         // lowcmd
         {
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
             if (mj_data_->time + 1.0e-9 < last_sim_time_) {
+                if(param::lmd_sim_mutex) {
+                    for(auto& motor:lowcmd->msg_.motor_cmd()) {motor.kp()=0;motor.kd()=1;motor.tau()=0;motor.dq()=0;}
+                }
                 startup_hold_active_ = startup_hold_enabled_;
                 startup_hold_release_logged_ = false;
             }
@@ -228,6 +234,16 @@ public:
                 }
             }
 
+            if (!reference::directory().empty()) {
+                reference::command_sim_time=mj_data_->time;
+                reference::command_wall_time=reference::wallSeconds();
+                reference::startup_hold=startup_hold_active_;
+                for(int i=0;i<std::min(num_motor_,20);++i){
+                    const auto& c=lowcmd->msg_.motor_cmd()[i];
+                    const double values[5]={c.q(),c.dq(),c.kp(),c.kd(),c.tau()};
+                    std::copy(values,values+5,reference::motor_commands.begin()+5*i);
+                }
+            }
             for(int i(0); i<num_motor_; i++) {
                 if (startup_hold_active_ && startup_hold_valid_[i]) {
                     mj_data_->ctrl[i] =
